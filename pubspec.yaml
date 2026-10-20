@@ -1,0 +1,144 @@
+name: local_tv
+description: "A new Flutter project."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.5
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_windows_video: ^1.0.11
+  google_fonts: ^9.0.0
+  file_picker: ^13.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # The "flutter_lints" package below contains a set of recommended lints to
+  # encourage good coding practices. The lint set provided by the package is
+  # activated in the `analysis_options.yaml` file located at the root of your
+  # package. See that file for information about deactivating specific lint
+  # rules and activating additional ones.
+  flutter_lints: ^6.0.0
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  uses-material-design: true
+
+  assets:
+    - assets/
+    - assets/videos/
+    - assets/images/misc/
+    - assets/images/users/
+    - assets/images/icons/
+    - assets/images/films/children/despicable-me/
+    - assets/images/films/children/frozen/
+    - assets/images/films/children/hotel-transylvania/
+    - assets/images/films/children/spirited-away/
+    - assets/images/films/children/up/
+    - assets/images/films/drama/fight-club/
+    - assets/images/films/drama/kings-speech/
+    - assets/images/films/drama/the-prestige/
+    - assets/images/films/drama/the-revenant/
+    - assets/images/films/drama/the-social-network/
+    - assets/images/films/romance/a-star-is-born/
+    - assets/images/films/romance/blue-valentine/
+    - assets/images/films/romance/la-la-land/
+    - assets/images/films/romance/the-notebook/
+    - assets/images/films/romance/titanic/
+    - assets/images/films/suspense/gone-girl/
+    - assets/images/films/suspense/prisoners/
+    - assets/images/films/suspense/seven/
+    - assets/images/films/suspense/shutter-island/
+    - assets/images/films/suspense/zodiac/
+    - assets/images/films/thriller/a-quiet-place/
+    - assets/images/films/thriller/black-swan/
+    - assets/images/films/thriller/joker/
+    - assets/images/films/thriller/nightcrawler/
+    - assets/images/films/thriller/the-silence-of-the-lambs/
+    - assets/images/series/children/arthur/
+    - assets/images/series/children/dora-the-explorer/
+    - assets/images/series/children/paw-patrol/
+    - assets/images/series/children/peppa-pig/
+    - assets/images/series/children/spongebob/
+    - assets/images/series/comedies/arrested-development/
+    - assets/images/series/comedies/curb-your-enthusiasm/
+    - assets/images/series/comedies/family-guy/
+    - assets/images/series/comedies/south-park/
+    - assets/images/series/comedies/the-office/
+    - assets/images/series/crime/long-shot/
+    - assets/images/series/crime/making-a-murderer/
+    - assets/images/series/crime/the-confession-killer/
+    - assets/images/series/crime/the-innocent-man/
+    - assets/images/series/crime/the-staircase/
+    - assets/images/series/documentaries/amanda-knox/
+    - assets/images/series/documentaries/citizenfour/
+    - assets/images/series/documentaries/man-on-wire/
+    - assets/images/series/documentaries/super-size-me/
+    - assets/images/series/documentaries/tiger-king/
+    - assets/images/series/feel-good/forrest-gump/
+    - assets/images/series/feel-good/good-will-hunting/
+    - assets/images/series/feel-good/juno/
+    - assets/images/series/feel-good/midnight-in-paris/
+    - assets/images/series/feel-good/school-of-rock/
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding adding assets from package dependencies, see
+  # https://flutter.dev/to/asset-from-package
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  # fonts:
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
+  #
+  # For details regarding fonts from package dependencies,
+  # see https://flutter.dev/to/font-from-package
+
