@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import '../models/media_item.dart';
 
-class ItemDetailDialog extends StatelessWidget {
+class ItemDetailDialog extends StatefulWidget {
   final MediaItem item;
   final VoidCallback onPlay;
   final VoidCallback? onEdit;
@@ -16,26 +19,120 @@ class ItemDetailDialog extends StatelessWidget {
     this.onPlayEpisode,
   });
 
+  @override
+  State<ItemDetailDialog> createState() => _ItemDetailDialogState();
+}
+
+class _ItemDetailDialogState extends State<ItemDetailDialog> {
+  Player? _previewPlayer;
+  VideoController? _previewController;
+  Timer? _previewTimer;
+  StreamSubscription? _posSub;
+  bool _isVideoReady = false;
+  bool _isMuted = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _schedulePreview();
+  }
+
+  @override
+  void dispose() {
+    _stopPreview();
+    super.dispose();
+  }
+
+  void _schedulePreview() {
+    _previewTimer?.cancel();
+    _previewTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) {
+        _startDialogPreview();
+      }
+    });
+  }
+
+  String _resolveVideoPath() {
+    if (widget.item.videoPath.isNotEmpty && !widget.item.videoPath.startsWith('asset:')) {
+      return widget.item.videoPath;
+    }
+    if (widget.item.episodes.isNotEmpty) {
+      return widget.item.episodes.first.videoPath;
+    }
+    return '';
+  }
+
+  Future<void> _startDialogPreview() async {
+    final path = _resolveVideoPath();
+    if (path.isEmpty || !File(path).existsSync()) return;
+
+    try {
+      final player = Player();
+      final controller = VideoController(player);
+
+      await player.setVolume(_isMuted ? 0 : 50);
+      await player.open(Media(path), play: true);
+      await player.seek(const Duration(seconds: 40));
+
+      // Loop a 25-second snippet
+      _posSub = player.stream.position.listen((pos) {
+        if (pos.inSeconds > 65) {
+          player.seek(const Duration(seconds: 40));
+        }
+      });
+
+      if (mounted) {
+        setState(() {
+          _previewPlayer = player;
+          _previewController = controller;
+          _isVideoReady = true;
+        });
+      } else {
+        player.dispose();
+      }
+    } catch (e) {
+      debugPrint('Dialog preview failed: $e');
+    }
+  }
+
+  void _stopPreview() {
+    _previewTimer?.cancel();
+    _posSub?.cancel();
+    _isVideoReady = false;
+    _previewPlayer?.stop();
+    _previewPlayer?.dispose();
+    _previewPlayer = null;
+    _previewController = null;
+  }
+
+  void _toggleMute() {
+    if (_previewPlayer == null) return;
+    setState(() {
+      _isMuted = !_isMuted;
+    });
+    _previewPlayer!.setVolume(_isMuted ? 0 : 50);
+  }
+
   Widget _buildBackdropImage() {
-    if (item.isNetworkImage) {
+    if (widget.item.isNetworkImage) {
       return Image.network(
-        item.customThumbnail!,
+        widget.item.customThumbnail!,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       );
     }
-    if (item.customThumbnail != null && File(item.customThumbnail!).existsSync()) {
+    if (widget.item.customThumbnail != null && File(widget.item.customThumbnail!).existsSync()) {
       return Image.file(
-        File(item.customThumbnail!),
+        File(widget.item.customThumbnail!),
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       );
     }
     return Image.asset(
-      item.largePosterPath,
+      widget.item.largePosterPath,
       fit: BoxFit.cover,
       errorBuilder: (_, _, _) => Image.asset(
-        item.thumbnailPath,
+        widget.item.thumbnailPath,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       ),
@@ -69,13 +166,31 @@ class ItemDetailDialog extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Top Backdrop Image with Gradient
+              // Top Backdrop Image & Video Preview with Gradient
               Stack(
                 children: [
                   AspectRatio(
                     aspectRatio: 16 / 9,
-                    child: _buildBackdropImage(),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(child: _buildBackdropImage()),
+                        if (_previewController != null)
+                          Positioned.fill(
+                            child: AnimatedOpacity(
+                              duration: const Duration(milliseconds: 600),
+                              opacity: _isVideoReady ? 1.0 : 0.0,
+                              child: Video(
+                                controller: _previewController!,
+                                fit: BoxFit.cover,
+                                controls: NoVideoControls,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
+
+                  // Gradient Vignette
                   Positioned.fill(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
@@ -92,12 +207,16 @@ class ItemDetailDialog extends StatelessWidget {
                       ),
                     ),
                   ),
+
                   // Close Button
                   Positioned(
                     top: 16,
                     right: 16,
                     child: InkWell(
-                      onTap: () => Navigator.of(context).pop(),
+                      onTap: () {
+                        _stopPreview();
+                        Navigator.of(context).pop();
+                      },
                       child: Container(
                         padding: const EdgeInsets.all(6),
                         decoration: const BoxDecoration(
@@ -108,6 +227,29 @@ class ItemDetailDialog extends StatelessWidget {
                       ),
                     ),
                   ),
+
+                  // Mute / Unmute Button on Backdrop
+                  if (_previewController != null && _isVideoReady)
+                    Positioned(
+                      top: 16,
+                      right: 56,
+                      child: InkWell(
+                        onTap: _toggleMute,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                    ),
+
                   // Title & Action on Backdrop
                   Positioned(
                     left: 32,
@@ -117,7 +259,7 @@ class ItemDetailDialog extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          item.title,
+                          widget.item.title,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 28,
@@ -129,12 +271,13 @@ class ItemDetailDialog extends StatelessWidget {
                           children: [
                             ElevatedButton.icon(
                               onPressed: () {
+                                _stopPreview();
                                 Navigator.of(context).pop();
-                                onPlay();
+                                widget.onPlay();
                               },
                               icon: const Icon(Icons.play_arrow, color: Colors.black, size: 24),
                               label: Text(
-                                item.isSeries ? 'Putar Episode 1' : 'Putar Video',
+                                widget.item.isSeries ? 'Putar Episode 1' : 'Putar Video',
                                 style: const TextStyle(
                                   color: Colors.black,
                                   fontSize: 15,
@@ -149,12 +292,13 @@ class ItemDetailDialog extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            if (onEdit != null) ...[
+                            if (widget.onEdit != null) ...[
                               const SizedBox(width: 12),
                               OutlinedButton.icon(
                                 onPressed: () {
+                                  _stopPreview();
                                   Navigator.of(context).pop();
-                                  onEdit!();
+                                  widget.onEdit!();
                                 },
                                 icon: const Icon(Icons.edit_note, color: Colors.white70, size: 20),
                                 label: const Text(
@@ -193,7 +337,7 @@ class ItemDetailDialog extends StatelessWidget {
                             borderRadius: BorderRadius.circular(2),
                           ),
                           child: Text(
-                            '${item.maturity}+',
+                            '${widget.item.maturity}+',
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 12,
@@ -201,10 +345,10 @@ class ItemDetailDialog extends StatelessWidget {
                             ),
                           ),
                         ),
-                        if (item.year != null) ...[
+                        if (widget.item.year != null) ...[
                           const SizedBox(width: 10),
                           Text(
-                            item.year!,
+                            widget.item.year!,
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 14,
@@ -212,14 +356,14 @@ class ItemDetailDialog extends StatelessWidget {
                             ),
                           ),
                         ],
-                        if (item.rating != null) ...[
+                        if (widget.item.rating != null) ...[
                           const SizedBox(width: 10),
                           Row(
                             children: [
                               const Icon(Icons.star, color: Colors.amber, size: 14),
                               const SizedBox(width: 4),
                               Text(
-                                item.rating!,
+                                widget.item.rating!,
                                 style: const TextStyle(
                                   color: Colors.amber,
                                   fontSize: 13,
@@ -237,7 +381,7 @@ class ItemDetailDialog extends StatelessWidget {
                             borderRadius: BorderRadius.circular(2),
                           ),
                           child: Text(
-                            item.isSeries ? '${item.episodes.length} EPISODE' : 'FILM',
+                            widget.item.isSeries ? '${widget.item.episodes.length} EPISODE' : 'FILM',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 10,
@@ -247,7 +391,7 @@ class ItemDetailDialog extends StatelessWidget {
                         ),
                         const SizedBox(width: 12),
                         Text(
-                          item.genre,
+                          widget.item.genre,
                           style: const TextStyle(
                             color: Color(0xFF46D369),
                             fontSize: 13,
@@ -258,7 +402,7 @@ class ItemDetailDialog extends StatelessWidget {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      item.description,
+                      widget.item.description,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 14,
@@ -267,7 +411,7 @@ class ItemDetailDialog extends StatelessWidget {
                     ),
 
                     // Episodes Section for Series
-                    if (item.isSeries && item.episodes.isNotEmpty) ...[
+                    if (widget.item.isSeries && widget.item.episodes.isNotEmpty) ...[
                       const SizedBox(height: 24),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -281,7 +425,7 @@ class ItemDetailDialog extends StatelessWidget {
                             ),
                           ),
                           Text(
-                            '${item.episodes.length} Episode Tersedia',
+                            '${widget.item.episodes.length} Episode Tersedia',
                             style: const TextStyle(color: Colors.white54, fontSize: 13),
                           ),
                         ],
@@ -296,10 +440,10 @@ class ItemDetailDialog extends StatelessWidget {
                         child: ListView.separated(
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
-                          itemCount: item.episodes.length,
+                          itemCount: widget.item.episodes.length,
                           separatorBuilder: (_, _) => const Divider(color: Colors.white12, height: 1),
                           itemBuilder: (ctx, index) {
-                            final ep = item.episodes[index];
+                            final ep = widget.item.episodes[index];
                             final sizeMb = ep.fileSize != null
                                 ? '${(ep.fileSize! / (1024 * 1024)).toStringAsFixed(1)} MB'
                                 : '';
@@ -340,11 +484,12 @@ class ItemDetailDialog extends StatelessWidget {
                                 icon: const Icon(Icons.play_circle_fill_rounded, color: Color(0xFFE50914), size: 30),
                                 tooltip: 'Putar Episode Ini',
                                 onPressed: () {
+                                  _stopPreview();
                                   Navigator.of(context).pop();
-                                  if (onPlayEpisode != null) {
-                                    onPlayEpisode!(ep);
+                                  if (widget.onPlayEpisode != null) {
+                                    widget.onPlayEpisode!(ep);
                                   } else {
-                                    onPlay();
+                                    widget.onPlay();
                                   }
                                 },
                               ),
@@ -354,10 +499,10 @@ class ItemDetailDialog extends StatelessWidget {
                       ),
                     ],
 
-                    if (item.videoPath.isNotEmpty) ...[
+                    if (widget.item.videoPath.isNotEmpty) ...[
                       const SizedBox(height: 18),
                       Text(
-                        'File Utama: ${item.videoPath}',
+                        'File Utama: ${widget.item.videoPath}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(color: Colors.white30, fontSize: 11),

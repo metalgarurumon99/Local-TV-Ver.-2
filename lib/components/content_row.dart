@@ -87,7 +87,7 @@ class _ContentRowState extends State<ContentRow> {
 
         // Carousel with Scroll Indicators
         SizedBox(
-          height: 145,
+          height: 265,
           child: Stack(
             children: [
               ListView.builder(

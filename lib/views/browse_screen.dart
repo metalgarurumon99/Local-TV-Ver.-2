@@ -460,7 +460,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                 if (displayGroups.isNotEmpty)
                   Transform.translate(
                     offset: (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
-                        ? const Offset(0, -60)
+                        ? const Offset(0, 16)
                         : Offset.zero,
                     child: Column(
                       children: displayGroups.entries.map((entry) {
