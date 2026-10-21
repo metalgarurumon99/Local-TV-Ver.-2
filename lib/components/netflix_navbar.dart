@@ -5,8 +5,8 @@ class NetflixNavbar extends StatefulWidget {
   final ValueChanged<String> onCategoryChanged;
   final ValueChanged<String> onSearchChanged;
   final VoidCallback onPickLocalFile;
-  final VoidCallback onConnectFolder;
-  final String? connectedFolderName;
+  final VoidCallback onManageFolders;
+  final int folderCount;
 
   const NetflixNavbar({
     super.key,
@@ -14,8 +14,8 @@ class NetflixNavbar extends StatefulWidget {
     required this.onCategoryChanged,
     required this.onSearchChanged,
     required this.onPickLocalFile,
-    required this.onConnectFolder,
-    this.connectedFolderName,
+    required this.onManageFolders,
+    this.folderCount = 0,
   });
 
   @override
@@ -35,11 +35,13 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    final bool isCompact = screenWidth < 900;
+    final bool isCompact = screenWidth < 1000;
+    final double horizontalPadding = screenWidth < 1250 ? 20.0 : 40.0;
+    final double gap = screenWidth < 1250 ? 12.0 : 20.0;
 
     return Container(
       height: 70,
-      padding: EdgeInsets.symmetric(horizontal: isCompact ? 16 : 40),
+      padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
@@ -60,9 +62,9 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
                 'LOCAL TV',
                 style: TextStyle(
                   color: const Color(0xFFE50914),
-                  fontSize: isCompact ? 20 : 26,
+                  fontSize: isCompact ? 18 : 24,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: 1.5,
+                  letterSpacing: 1.2,
                   shadows: [
                     Shadow(
                       color: Colors.black.withValues(alpha: 0.8),
@@ -73,7 +75,7 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
               ),
               const SizedBox(width: 6),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                 decoration: BoxDecoration(
                   color: const Color(0xFFE50914),
                   borderRadius: BorderRadius.circular(4),
@@ -82,31 +84,31 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
                   'v2',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 10,
+                    fontSize: 9,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
             ],
           ),
-          SizedBox(width: isCompact ? 16 : 32),
+          SizedBox(width: gap),
 
           // Categories Links
-          _buildNavLink('series', 'Series'),
-          const SizedBox(width: 16),
           _buildNavLink('films', 'Films'),
-          const SizedBox(width: 16),
-          _buildNavLink('local', 'Folder Film Saya'),
-          const SizedBox(width: 16),
+          SizedBox(width: gap),
+          _buildNavLink('series', 'Series'),
+          SizedBox(width: gap),
+          _buildNavLink('local', 'Folder Film'),
+          SizedBox(width: gap),
 
-          // Connect Folder Button
+          // Manage Folders Button
           TextButton.icon(
-            onPressed: widget.onConnectFolder,
-            icon: const Icon(Icons.folder_special, color: Color(0xFFE50914), size: 16),
+            onPressed: widget.onManageFolders,
+            icon: const Icon(Icons.folder_copy_rounded, color: Color(0xFFE50914), size: 15),
             label: Text(
-              widget.connectedFolderName != null
-                  ? '📁 ${widget.connectedFolderName}'
-                  : 'Hubungkan Folder Film',
+              widget.folderCount > 0
+                  ? 'Kelola (${widget.folderCount})'
+                  : 'Folder Film',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -116,7 +118,7 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
               ),
             ),
             style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               backgroundColor: const Color(0xFFE50914).withValues(alpha: 0.15),
               side: const BorderSide(color: Color(0xFFE50914), width: 0.8),
               shape: RoundedRectangleBorder(
@@ -127,10 +129,10 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
           const SizedBox(width: 8),
 
           // Pick Single File
-          if (!isCompact)
+          if (screenWidth >= 1150)
             TextButton.icon(
               onPressed: widget.onPickLocalFile,
-              icon: const Icon(Icons.file_open_outlined, color: Colors.white70, size: 16),
+              icon: const Icon(Icons.file_open_outlined, color: Colors.white70, size: 15),
               label: const Text(
                 'Buka File',
                 style: TextStyle(
@@ -140,7 +142,7 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
                 ),
               ),
               style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 backgroundColor: Colors.white.withValues(alpha: 0.08),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(6),

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import '../models/media_item.dart';
+import 'metadata_service.dart';
 
 class LocalLibraryService {
   static const Set<String> supportedVideoExtensions = {
@@ -21,85 +22,152 @@ class LocalLibraryService {
     return File('library_config.json');
   }
 
-  /// Get the saved folder path from disk config
-  static Future<String?> getSavedFolderPath() async {
+  /// Read the full persistent library configuration
+  static Future<Map<String, dynamic>> _readConfig() async {
     try {
       if (await _configFile.exists()) {
         final content = await _configFile.readAsString();
-        final Map<String, dynamic> data = jsonDecode(content);
-        return data['folderPath'] as String?;
+        return jsonDecode(content) as Map<String, dynamic>;
       }
     } catch (e) {
       debugPrint('Error reading library config: $e');
     }
+    return {
+      'folders': <String>[],
+      'customMetadata': <String, dynamic>{},
+    };
+  }
+
+  /// Save full configuration to disk
+  static Future<void> _writeConfig(Map<String, dynamic> config) async {
+    try {
+      await _configFile.writeAsString(jsonEncode(config));
+    } catch (e) {
+      debugPrint('Error writing library config: $e');
+    }
+  }
+
+  /// Get all connected folders
+  static Future<List<String>> getConnectedFolders() async {
+    final config = await _readConfig();
+    final rawList = config['folders'] as List<dynamic>? ?? [];
+    return rawList.map((e) => e.toString()).where((p) => p.isNotEmpty).toList();
+  }
+
+  /// Add a new folder to connected list
+  static Future<bool> addFolder(String folderPath) async {
+    final cleanPath = folderPath.trim();
+    if (cleanPath.isEmpty) return false;
+
+    final config = await _readConfig();
+    final List<String> folders = (config['folders'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .toList();
+
+    if (!folders.contains(cleanPath)) {
+      folders.add(cleanPath);
+      config['folders'] = folders;
+      await _writeConfig(config);
+      return true;
+    }
+    return false;
+  }
+
+  /// Remove a folder from connected list
+  static Future<void> removeFolder(String folderPath) async {
+    final config = await _readConfig();
+    final List<String> folders = (config['folders'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .toList();
+
+    folders.remove(folderPath);
+    config['folders'] = folders;
+    await _writeConfig(config);
+  }
+
+  /// Save manual or custom metadata for a specific video path
+  static Future<void> saveCustomMetadata(String videoPath, MediaItem item) async {
+    final config = await _readConfig();
+    final Map<String, dynamic> metaMap = Map<String, dynamic>.from(
+      config['customMetadata'] as Map<String, dynamic>? ?? {},
+    );
+
+    metaMap[videoPath] = item.toJson();
+    config['customMetadata'] = metaMap;
+    await _writeConfig(config);
+  }
+
+  /// Open native Windows folder picker dialog and add folder
+  static Future<String?> pickAndAddFolder() async {
+    try {
+      final selectedDirectory = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Pilih Folder Koleksi Film / Serial',
+      );
+
+      if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
+        await addFolder(selectedDirectory);
+        return selectedDirectory;
+      }
+    } catch (e) {
+      debugPrint('Error picking folder: $e');
+    }
     return null;
   }
 
-  /// Save folder path and cached items to disk
-  static Future<void> saveFolderPath(String folderPath, List<MediaItem> items) async {
-    try {
-      final data = {
-        'folderPath': folderPath,
-        'itemCount': items.length,
-        'lastScanned': DateTime.now().toIso8601String(),
-      };
-      await _configFile.writeAsString(jsonEncode(data));
-    } catch (e) {
-      debugPrint('Error saving library config: $e');
-    }
-  }
+  /// Scan all connected folders and return enriched media items
+  static Future<List<MediaItem>> scanAllFolders({
+    bool fetchOnlineMetadata = true,
+    void Function(String message)? onProgress,
+  }) async {
+    final folders = await getConnectedFolders();
+    if (folders.isEmpty) return [];
 
-  /// Open native Windows folder picker dialog and scan
-  static Future<List<MediaItem>> pickFolderAndScan() async {
-    try {
-      final selectedDirectory = await FilePicker.getDirectoryPath(
-        dialogTitle: 'Pilih Folder Koleksi Film / Serial Anda',
-      );
+    final config = await _readConfig();
+    final Map<String, dynamic> customMetadataMap = Map<String, dynamic>.from(
+      config['customMetadata'] as Map<String, dynamic>? ?? {},
+    );
 
-      if (selectedDirectory == null || selectedDirectory.isEmpty) {
-        return [];
-      }
+    final List<MediaItem> allItems = [];
+    final Set<String> seenPaths = {};
 
-      final items = await scanFolder(selectedDirectory);
-      await saveFolderPath(selectedDirectory, items);
-      return items;
-    } catch (e) {
-      debugPrint('Error picking folder: $e');
-      return [];
-    }
-  }
+    for (final folderPath in folders) {
+      final dir = Directory(folderPath);
+      if (!await dir.exists()) continue;
 
-  /// Scan a folder path on disk for video files
-  static Future<List<MediaItem>> scanFolder(String folderPath) async {
-    final dir = Directory(folderPath);
-    if (!await dir.exists()) {
-      return [];
-    }
+      onProgress?.call('Memindai folder: $folderPath');
 
-    final List<MediaItem> items = [];
-    final seenPaths = <String>{};
+      try {
+        final entities = dir.listSync(recursive: true, followLinks: false);
 
-    try {
-      final entities = dir.listSync(recursive: true, followLinks: false);
+        for (final entity in entities) {
+          if (entity is File) {
+            final pathLower = entity.path.toLowerCase();
+            final hasVideoExt = supportedVideoExtensions.any((ext) => pathLower.endsWith(ext));
 
-      for (final entity in entities) {
-        if (entity is File) {
-          final pathLower = entity.path.toLowerCase();
-          final hasVideoExt = supportedVideoExtensions.any((ext) => pathLower.endsWith(ext));
+            final fileName = entity.uri.pathSegments.isNotEmpty
+                ? entity.uri.pathSegments.last
+                : entity.path.split(Platform.pathSeparator).last;
 
-          // Exclude sample files or hidden files
-          final fileName = entity.uri.pathSegments.isNotEmpty
-              ? entity.uri.pathSegments.last
-              : entity.path.split(Platform.pathSeparator).last;
+            if (hasVideoExt && !seenPaths.contains(entity.path) && !fileName.startsWith('.')) {
+              seenPaths.add(entity.path);
 
-          if (hasVideoExt && !seenPaths.contains(entity.path) && !fileName.startsWith('.')) {
-            seenPaths.add(entity.path);
+              // 1. Check if we already have saved/manual metadata for this file
+              if (customMetadataMap.containsKey(entity.path)) {
+                try {
+                  final savedJson = customMetadataMap[entity.path] as Map<String, dynamic>;
+                  final item = MediaItem.fromJson(savedJson);
+                  allItems.add(item);
+                  continue;
+                } catch (e) {
+                  debugPrint('Error reading custom metadata for ${entity.path}: $e');
+                }
+              }
 
-            final cleanedTitle = cleanVideoTitle(fileName);
-            final ext = fileName.contains('.') ? fileName.split('.').last.toUpperCase() : 'VIDEO';
+              // 2. Otherwise create item from file name
+              final cleanedTitle = cleanVideoTitle(fileName);
+              final ext = fileName.contains('.') ? fileName.split('.').last.toUpperCase() : 'VIDEO';
 
-            items.add(
-              MediaItem(
+              var item = MediaItem(
                 id: 'local-${entity.path.hashCode.abs()}',
                 title: cleanedTitle,
                 description: 'File: $fileName\nFormat: $ext\nLokasi: ${entity.path}',
@@ -108,48 +176,68 @@ class LocalLibraryService {
                 slug: 'local-video',
                 category: 'films',
                 videoPath: entity.path,
-                customThumbnail: null,
-              ),
-            );
+                folderPath: folderPath,
+              );
+
+              // 3. Online metadata fetch (if online & enabled)
+              if (fetchOnlineMetadata) {
+                try {
+                  onProgress?.call('Mencari info online: $cleanedTitle');
+                  final online = await OnlineMetadataService.searchMetadata(cleanedTitle);
+                  if (online != null) {
+                    item = item.copyWith(
+                      title: online.title,
+                      description: online.blurb,
+                      customThumbnail: online.posterUrl,
+                      year: online.year,
+                      rating: online.rating,
+                      genre: online.genre ?? item.genre,
+                    );
+                    // Cache the fetched metadata so we don't query every time
+                    customMetadataMap[entity.path] = item.toJson();
+                  }
+                } catch (e) {
+                  debugPrint('Online metadata fetch failed for $cleanedTitle: $e');
+                }
+              }
+
+              allItems.add(item);
+            }
           }
         }
+      } catch (e) {
+        debugPrint('Error scanning folder $folderPath: $e');
       }
-    } catch (e) {
-      debugPrint('Error scanning folder: $e');
     }
 
-    // Sort alphabetically by title
-    items.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    // Update config with any newly fetched metadata cache
+    config['customMetadata'] = customMetadataMap;
+    await _writeConfig(config);
 
-    return items;
+    // Sort alphabetically by title
+    allItems.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+
+    return allItems;
   }
 
   /// Clean raw movie/series filenames into readable titles
   static String cleanVideoTitle(String rawFileName) {
-    // 1. Remove extension
     String name = rawFileName;
     final dotIndex = name.lastIndexOf('.');
     if (dotIndex != -1) {
       name = name.substring(0, dotIndex);
     }
 
-    // 2. Replace dots, underscores, hyphens with spaces
     name = name.replaceAll(RegExp(r'[\._\-]'), ' ');
 
-    // 3. Remove common release tags and resolutions
     final tagsPattern = RegExp(
-      r'\b(1080p|720p|2160p|4k|uhd|bluray|blu-ray|web-dl|webrip|hdrip|dvdrip|h264|x264|h265|x265|hevc|aac|ac3|dts|remux|yts|yify|rarbg|psa|eztv|proper|repack|complete|extended|multi|sub|dub)\b',
+      r'\b(1080p|720p|2160p|4k|uhd|bluray|blu-ray|web-dl|webrip|hdrip|dvdrip|h264|x264|h265|x265|hevc|aac|ac3|dts|remux|yts|yify|rarbg|psa|eztv|proper|repack|complete|extended|multi|sub|dub|hdr)\b',
       caseSensitive: false,
     );
     name = name.replaceAll(tagsPattern, ' ');
-
-    // 4. Remove extra brackets and square brackets
     name = name.replaceAll(RegExp(r'[\[\]\{\}]'), ' ');
-
-    // 5. Condense multiple spaces into one and trim
     name = name.replaceAll(RegExp(r'\s+'), ' ').trim();
 
-    // 6. Capitalize words
     if (name.isNotEmpty) {
       name = name.split(' ').map((word) {
         if (word.isEmpty) return word;

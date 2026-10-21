@@ -6,12 +6,14 @@ class VideoCard extends StatefulWidget {
   final MediaItem item;
   final VoidCallback onPlay;
   final VoidCallback onSelect;
+  final VoidCallback? onEdit;
 
   const VideoCard({
     super.key,
     required this.item,
     required this.onPlay,
     required this.onSelect,
+    this.onEdit,
   });
 
   @override
@@ -21,50 +23,70 @@ class VideoCard extends StatefulWidget {
 class _VideoCardState extends State<VideoCard> {
   bool _isHovered = false;
 
+  Widget _buildFallbackCard() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF2A1114),
+            Color(0xFF1E1E1E),
+            Color(0xFF141414),
+          ],
+        ),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.movie_filter_rounded, color: Color(0xFFE50914), size: 30),
+          const SizedBox(height: 8),
+          Text(
+            widget.item.title,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 11,
+            ),
+          ),
+          if (widget.item.year != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              widget.item.year!,
+              style: const TextStyle(color: Colors.white54, fontSize: 10),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildThumbnail() {
+    if (widget.item.isNetworkImage) {
+      return Image.network(
+        widget.item.customThumbnail!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildFallbackCard(),
+      );
+    }
+
     if (widget.item.customThumbnail != null &&
         File(widget.item.customThumbnail!).existsSync()) {
       return Image.file(
         File(widget.item.customThumbnail!),
         fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildFallbackCard(),
       );
     }
 
     return Image.asset(
       widget.item.thumbnailPath,
       fit: BoxFit.cover,
-      errorBuilder: (_, _, _) => Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFF2A1114),
-              Color(0xFF1E1E1E),
-              Color(0xFF141414),
-            ],
-          ),
-        ),
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.movie_filter_rounded, color: Color(0xFFE50914), size: 30),
-            const SizedBox(height: 8),
-            Text(
-              widget.item.title,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ),
-      ),
+      errorBuilder: (_, _, _) => _buildFallbackCard(),
     );
   }
 
@@ -171,7 +193,50 @@ class _VideoCardState extends State<VideoCard> {
                                   ),
                                 ),
                               ),
+
+                              if (widget.item.rating != null) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: Colors.amber.withValues(alpha: 0.2),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.star, color: Colors.amber, size: 10),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        widget.item.rating!,
+                                        style: const TextStyle(color: Colors.amber, fontSize: 10, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+
                               const Spacer(),
+
+                              // Edit Button
+                              if (widget.onEdit != null) ...[
+                                Tooltip(
+                                  message: 'Edit Info & Poster',
+                                  child: InkWell(
+                                    onTap: widget.onEdit,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: Colors.white30, width: 0.8),
+                                      ),
+                                      child: const Icon(Icons.edit_outlined, color: Colors.white, size: 14),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                              ],
 
                               // Info Chevron
                               const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 20),
@@ -186,21 +251,18 @@ class _VideoCardState extends State<VideoCard> {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 13,
+                              fontSize: 12,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          const SizedBox(height: 2),
 
-                          // Short snippet
+                          // Genre Tag
                           Text(
-                            widget.item.description,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.7),
+                            widget.item.genre,
+                            style: const TextStyle(
+                              color: Color(0xFF46D369), // Netflix match green
                               fontSize: 10,
-                              height: 1.2,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ],

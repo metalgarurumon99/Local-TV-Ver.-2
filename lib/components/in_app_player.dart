@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -7,11 +8,15 @@ import '../models/media_item.dart';
 class InAppPlayer extends StatefulWidget {
   final MediaItem item;
   final VoidCallback onClose;
+  final List<MediaItem> playlist;
+  final ValueChanged<MediaItem>? onMediaChanged;
 
   const InAppPlayer({
     super.key,
     required this.item,
     required this.onClose,
+    this.playlist = const [],
+    this.onMediaChanged,
   });
 
   @override
@@ -21,6 +26,8 @@ class InAppPlayer extends StatefulWidget {
 class _InAppPlayerState extends State<InAppPlayer> {
   late final Player _player;
   late final VideoController _controller;
+  late MediaItem _currentItem;
+
   bool _showControls = true;
   Timer? _hideTimer;
 
@@ -29,9 +36,17 @@ class _InAppPlayerState extends State<InAppPlayer> {
   bool _isPlaying = true;
   double _volume = 100.0;
 
+  // Track & Subtitle selection state
+  Tracks _tracks = const Tracks();
+  Track _currentTrack = const Track();
+  bool _showAudioSubtitlePopover = false;
+  bool _showEpisodesDrawer = false;
+
   @override
   void initState() {
     super.initState();
+    _currentItem = widget.item;
+
     // Enable native libass rendering so subtitle styling is identical to original MPV
     _player = Player(
       configuration: const PlayerConfiguration(
@@ -58,11 +73,21 @@ class _InAppPlayerState extends State<InAppPlayer> {
       if (mounted) setState(() => _volume = vol);
     });
 
-    // Start playback
-    final mediaSource = widget.item.videoPath;
-    _player.open(Media(mediaSource));
+    _player.stream.tracks.listen((tracks) {
+      if (mounted) setState(() => _tracks = tracks);
+    });
 
+    _player.stream.track.listen((track) {
+      if (mounted) setState(() => _currentTrack = track);
+    });
+
+    // Start playback
+    _startPlayback(_currentItem.videoPath);
     _startHideTimer();
+  }
+
+  void _startPlayback(String path) {
+    _player.open(Media(path));
   }
 
   void _applyMpvSubtitleStyling() {
@@ -91,17 +116,42 @@ class _InAppPlayerState extends State<InAppPlayer> {
     }
   }
 
+  void _switchMedia(MediaItem newItem) {
+    setState(() {
+      _currentItem = newItem;
+      _showEpisodesDrawer = false;
+      _showAudioSubtitlePopover = false;
+    });
+    widget.onMediaChanged?.call(newItem);
+    _startPlayback(newItem.videoPath);
+    _onUserActivity();
+  }
+
+  void _playNextInPlaylist() {
+    if (widget.playlist.isEmpty) return;
+    final currentIndex = widget.playlist.indexWhere((it) => it.videoPath == _currentItem.videoPath);
+    if (currentIndex != -1 && currentIndex + 1 < widget.playlist.length) {
+      _switchMedia(widget.playlist[currentIndex + 1]);
+    }
+  }
+
   void _startHideTimer() {
     _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && _isPlaying) {
+    if (_showAudioSubtitlePopover || _showEpisodesDrawer) {
+      // Keep controls visible while menu/drawer is open
+      return;
+    }
+    _hideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _isPlaying && !_showAudioSubtitlePopover && !_showEpisodesDrawer) {
         setState(() => _showControls = false);
       }
     });
   }
 
   void _onUserActivity() {
-    setState(() => _showControls = true);
+    if (!_showControls) {
+      setState(() => _showControls = true);
+    }
     _startHideTimer();
   }
 
@@ -122,12 +172,67 @@ class _InAppPlayerState extends State<InAppPlayer> {
     return '$minutes:$seconds';
   }
 
+  String _getTrackName(dynamic track, String fallback) {
+    if (track == null) return fallback;
+    final title = track.title as String?;
+    final lang = track.language as String?;
+    if (title != null && title.isNotEmpty) return title;
+    if (lang != null && lang.isNotEmpty) return lang.toUpperCase();
+    return fallback;
+  }
+
+  Widget _buildPosterThumbnail(MediaItem item) {
+    if (item.isNetworkImage) {
+      return Image.network(
+        item.customThumbnail!,
+        width: 100,
+        height: 60,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
+      );
+    }
+    if (item.customThumbnail != null && File(item.customThumbnail!).existsSync()) {
+      return Image.file(
+        File(item.customThumbnail!),
+        width: 100,
+        height: 60,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
+      );
+    }
+    return Image.asset(
+      item.thumbnailPath,
+      width: 100,
+      height: 60,
+      fit: BoxFit.cover,
+      errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
+    );
+  }
+
+  Widget _buildThumbnailPlaceholder() {
+    return Container(
+      width: 100,
+      height: 60,
+      color: const Color(0xFF222222),
+      child: const Center(
+        child: Icon(Icons.movie, size: 24, color: Colors.white24),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
       onHover: (_) => _onUserActivity(),
       child: GestureDetector(
         onTap: () {
+          if (_showAudioSubtitlePopover || _showEpisodesDrawer) {
+            setState(() {
+              _showAudioSubtitlePopover = false;
+              _showEpisodesDrawer = false;
+            });
+            return;
+          }
           setState(() => _showControls = !_showControls);
           if (_showControls) _startHideTimer();
         },
@@ -176,48 +281,30 @@ class _InAppPlayerState extends State<InAppPlayer> {
                               IconButton(
                                 icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
                                 onPressed: widget.onClose,
-                                tooltip: 'Kembali ke Katalog',
                               ),
                               const SizedBox(width: 16),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    widget.item.title,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  Text(
-                                    '${widget.item.category.toUpperCase()} • ${widget.item.genre}',
-                                    style: const TextStyle(
-                                      color: Colors.white60,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const Spacer(),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFE50914),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: const Row(
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(Icons.tv, color: Colors.white, size: 14),
-                                    SizedBox(width: 4),
                                     Text(
-                                      'IN-APP MPV',
-                                      style: TextStyle(
+                                      _currentItem.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
                                         color: Colors.white,
-                                        fontSize: 11,
+                                        fontSize: 18,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
+                                    if (_currentItem.year != null || _currentItem.genre.isNotEmpty) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '${_currentItem.genre} ${_currentItem.year != null ? "• ${_currentItem.year}" : ""}',
+                                        style: const TextStyle(color: Colors.white60, fontSize: 12),
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -225,6 +312,14 @@ class _InAppPlayerState extends State<InAppPlayer> {
                           ),
                         ),
                       ),
+
+                      // Netflix-Style Audio & Subtitles Popover
+                      if (_showAudioSubtitlePopover)
+                        Positioned(
+                          bottom: 90,
+                          right: 60,
+                          child: _buildNetflixAudioSubtitleMenu(),
+                        ),
 
                       // Bottom Control Bar
                       Positioned(
@@ -239,14 +334,16 @@ class _InAppPlayerState extends State<InAppPlayer> {
                               end: Alignment.topCenter,
                               colors: [
                                 Colors.black.withValues(alpha: 0.9),
+                                Colors.black.withValues(alpha: 0.5),
                                 Colors.transparent,
                               ],
+                              stops: const [0.0, 0.6, 1.0],
                             ),
                           ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // Scrubber Slider
+                              // Timeline Scrubber
                               SliderTheme(
                                 data: SliderTheme.of(context).copyWith(
                                   activeTrackColor: const Color(0xFFE50914),
@@ -257,7 +354,9 @@ class _InAppPlayerState extends State<InAppPlayer> {
                                   overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
                                 ),
                                 child: Slider(
-                                  value: _position.inMilliseconds.clamp(0, _duration.inMilliseconds).toDouble(),
+                                  value: _position.inMilliseconds
+                                      .clamp(0, _duration.inMilliseconds)
+                                      .toDouble(),
                                   min: 0.0,
                                   max: _duration.inMilliseconds.toDouble() > 0
                                       ? _duration.inMilliseconds.toDouble()
@@ -271,7 +370,7 @@ class _InAppPlayerState extends State<InAppPlayer> {
 
                               Row(
                                 children: [
-                                  // Play/Pause Button
+                                  // Play/Pause
                                   IconButton(
                                     icon: Icon(
                                       _isPlaying ? Icons.pause : Icons.play_arrow,
@@ -283,7 +382,7 @@ class _InAppPlayerState extends State<InAppPlayer> {
                                       _onUserActivity();
                                     },
                                   ),
-                                  const SizedBox(width: 8),
+                                  const SizedBox(width: 6),
 
                                   // Fast Backward 10s
                                   IconButton(
@@ -304,7 +403,17 @@ class _InAppPlayerState extends State<InAppPlayer> {
                                       _onUserActivity();
                                     },
                                   ),
-                                  const SizedBox(width: 12),
+                                  const SizedBox(width: 8),
+
+                                  // Next Video / Episode button
+                                  if (widget.playlist.isNotEmpty)
+                                    IconButton(
+                                      icon: const Icon(Icons.skip_next_rounded, color: Colors.white70, size: 26),
+                                      tooltip: 'Video Berikutnya',
+                                      onPressed: _playNextInPlaylist,
+                                    ),
+
+                                  const SizedBox(width: 8),
 
                                   // Time Label
                                   Text(
@@ -314,20 +423,21 @@ class _InAppPlayerState extends State<InAppPlayer> {
 
                                   const Spacer(),
 
-                                  // Volume Slider
+                                  // Volume
                                   IconButton(
                                     icon: Icon(
                                       _volume == 0
                                           ? Icons.volume_off
                                           : (_volume < 50 ? Icons.volume_down : Icons.volume_up),
                                       color: Colors.white,
+                                      size: 22,
                                     ),
                                     onPressed: () {
                                       _player.setVolume(_volume > 0 ? 0.0 : 100.0);
                                     },
                                   ),
                                   SizedBox(
-                                    width: 80,
+                                    width: 75,
                                     child: SliderTheme(
                                       data: SliderTheme.of(context).copyWith(
                                         activeTrackColor: Colors.white,
@@ -347,6 +457,42 @@ class _InAppPlayerState extends State<InAppPlayer> {
                                       ),
                                     ),
                                   ),
+                                  const SizedBox(width: 14),
+
+                                  // Netflix-Style: Episodes Button
+                                  if (widget.playlist.isNotEmpty)
+                                    IconButton(
+                                      icon: Icon(
+                                        Icons.video_library_rounded,
+                                        color: _showEpisodesDrawer ? const Color(0xFFE50914) : Colors.white,
+                                        size: 24,
+                                      ),
+                                      tooltip: 'Daftar Video / Episode',
+                                      onPressed: () {
+                                        setState(() {
+                                          _showEpisodesDrawer = !_showEpisodesDrawer;
+                                          _showAudioSubtitlePopover = false;
+                                        });
+                                        _onUserActivity();
+                                      },
+                                    ),
+
+                                  // Netflix-Style: Audio & Subtitles Button
+                                  IconButton(
+                                    icon: Icon(
+                                      Icons.chat_bubble_outline_rounded,
+                                      color: _showAudioSubtitlePopover ? const Color(0xFFE50914) : Colors.white,
+                                      size: 24,
+                                    ),
+                                    tooltip: 'Audio & Subtitle',
+                                    onPressed: () {
+                                      setState(() {
+                                        _showAudioSubtitlePopover = !_showAudioSubtitlePopover;
+                                        _showEpisodesDrawer = false;
+                                      });
+                                      _onUserActivity();
+                                    },
+                                  ),
                                 ],
                               ),
                             ],
@@ -357,9 +503,364 @@ class _InAppPlayerState extends State<InAppPlayer> {
                   ),
                 ),
               ),
+
+              // Netflix-Style Episodes Slide-Over Drawer
+              if (_showEpisodesDrawer && widget.playlist.isNotEmpty)
+                Positioned(
+                  top: 0,
+                  bottom: 0,
+                  right: 0,
+                  width: 360,
+                  child: _buildNetflixEpisodesDrawer(),
+                ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Netflix-Style 2-Column Audio & Subtitles Menu
+  Widget _buildNetflixAudioSubtitleMenu() {
+    final audioTracks = _tracks.audio;
+    final subtitleTracks = _tracks.subtitle;
+
+    return Container(
+      width: 440,
+      constraints: const BoxConstraints(maxHeight: 380),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xF2181818),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white24, width: 0.8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.8),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Audio Column
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.audiotrack, color: Color(0xFFE50914), size: 16),
+                    SizedBox(width: 6),
+                    Text(
+                      'AUDIO',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (audioTracks.isEmpty)
+                  const Text('Tidak ada audio track', style: TextStyle(color: Colors.white38, fontSize: 12))
+                else
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: audioTracks.length,
+                      itemBuilder: (ctx, idx) {
+                        final track = audioTracks[idx];
+                        final isSelected = _currentTrack.audio == track;
+                        final label = _getTrackName(track, 'Audio ${idx + 1}');
+
+                        return InkWell(
+                          onTap: () {
+                            _player.setAudioTrack(track);
+                            setState(() {});
+                            _onUserActivity();
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.check_rounded,
+                                  color: isSelected ? const Color(0xFFE50914) : Colors.transparent,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    label,
+                                    style: TextStyle(
+                                      color: isSelected ? Colors.white : Colors.white70,
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          Container(width: 1, height: 260, color: Colors.white12, margin: const EdgeInsets.symmetric(horizontal: 16)),
+
+          // Subtitles Column
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.subtitles, color: Color(0xFFE50914), size: 16),
+                    SizedBox(width: 6),
+                    Text(
+                      'SUBTITLES',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Off Option
+                InkWell(
+                  onTap: () {
+                    _player.setSubtitleTrack(SubtitleTrack.no());
+                    setState(() {});
+                    _onUserActivity();
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.check_rounded,
+                          color: (_currentTrack.subtitle == SubtitleTrack.no())
+                              ? const Color(0xFFE50914)
+                              : Colors.transparent,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Nonaktif (Off)',
+                          style: TextStyle(
+                            color: (_currentTrack.subtitle == SubtitleTrack.no())
+                                ? Colors.white
+                                : Colors.white70,
+                            fontWeight: (_currentTrack.subtitle == SubtitleTrack.no())
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Subtitle Tracks
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: subtitleTracks.length,
+                    itemBuilder: (ctx, idx) {
+                      final track = subtitleTracks[idx];
+                      if (track.id == 'no' || track.id == 'auto') return const SizedBox.shrink();
+
+                      final isSelected = _currentTrack.subtitle == track;
+                      final label = _getTrackName(track, 'Subtitle ${idx + 1}');
+
+                      return InkWell(
+                        onTap: () {
+                          _player.setSubtitleTrack(track);
+                          setState(() {});
+                          _onUserActivity();
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.check_rounded,
+                                color: isSelected ? const Color(0xFFE50914) : Colors.transparent,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  label,
+                                  style: TextStyle(
+                                    color: isSelected ? Colors.white : Colors.white70,
+                                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Netflix-Style Episodes Drawer Slide-Over
+  Widget _buildNetflixEpisodesDrawer() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xF7141414),
+        border: const Border(left: BorderSide(color: Colors.white12)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.8),
+            blurRadius: 20,
+            offset: const Offset(-8, 0),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Drawer Header
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 16, 12),
+            child: Row(
+              children: [
+                const Icon(Icons.video_library_rounded, color: Color(0xFFE50914), size: 20),
+                const SizedBox(width: 10),
+                const Text(
+                  'Daftar Episode & Video',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white60, size: 20),
+                  onPressed: () => setState(() => _showEpisodesDrawer = false),
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white12, height: 1),
+
+          // Playlist Item List
+          Expanded(
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: widget.playlist.length,
+              separatorBuilder: (context, index) => const Divider(color: Colors.white10, height: 1),
+              itemBuilder: (ctx, index) {
+                final item = widget.playlist[index];
+                final isCurrent = item.videoPath == _currentItem.videoPath;
+
+                return InkWell(
+                  onTap: () => _switchMedia(item),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    color: isCurrent ? const Color(0xFFE50914).withValues(alpha: 0.15) : Colors.transparent,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Episode Index
+                        SizedBox(
+                          width: 24,
+                          child: Text(
+                            '${index + 1}',
+                            style: TextStyle(
+                              color: isCurrent ? const Color(0xFFE50914) : Colors.white38,
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+
+                        // Thumbnail
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              _buildPosterThumbnail(item),
+                              if (isCurrent)
+                                Container(
+                                  width: 100,
+                                  height: 60,
+                                  color: Colors.black45,
+                                  child: const Center(
+                                    child: Icon(Icons.equalizer_rounded, color: Color(0xFFE50914), size: 24),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+
+                        // Title & Status
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: isCurrent ? Colors.white : Colors.white70,
+                                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              if (isCurrent) ...[
+                                const SizedBox(height: 4),
+                                const Text(
+                                  'Sedang Diputar',
+                                  style: TextStyle(
+                                    color: Color(0xFFE50914),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

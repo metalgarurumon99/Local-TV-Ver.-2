@@ -7,6 +7,7 @@ class ContentRow extends StatefulWidget {
   final List<MediaItem> items;
   final ValueChanged<MediaItem> onPlay;
   final ValueChanged<MediaItem> onSelect;
+  final ValueChanged<MediaItem>? onEdit;
 
   const ContentRow({
     super.key,
@@ -14,6 +15,7 @@ class ContentRow extends StatefulWidget {
     required this.items,
     required this.onPlay,
     required this.onSelect,
+    this.onEdit,
   });
 
   @override
@@ -99,6 +101,7 @@ class _ContentRowState extends State<ContentRow> {
                     item: item,
                     onPlay: () => widget.onPlay(item),
                     onSelect: () => widget.onSelect(item),
+                    onEdit: widget.onEdit != null ? () => widget.onEdit!(item) : null,
                   );
                 },
               ),

@@ -1,15 +1,53 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/media_item.dart';
 
 class ItemDetailDialog extends StatelessWidget {
   final MediaItem item;
   final VoidCallback onPlay;
+  final VoidCallback? onEdit;
 
   const ItemDetailDialog({
     super.key,
     required this.item,
     required this.onPlay,
+    this.onEdit,
   });
+
+  Widget _buildBackdropImage() {
+    if (item.isNetworkImage) {
+      return Image.network(
+        item.customThumbnail!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildPlaceholder(),
+      );
+    }
+    if (item.customThumbnail != null && File(item.customThumbnail!).existsSync()) {
+      return Image.file(
+        File(item.customThumbnail!),
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildPlaceholder(),
+      );
+    }
+    return Image.asset(
+      item.largePosterPath,
+      fit: BoxFit.cover,
+      errorBuilder: (_, _, _) => Image.asset(
+        item.thumbnailPath,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => _buildPlaceholder(),
+      ),
+    );
+  }
+
+  Widget _buildPlaceholder() {
+    return Container(
+      color: const Color(0xFF222222),
+      child: const Center(
+        child: Icon(Icons.movie, size: 60, color: Colors.white24),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -28,20 +66,7 @@ class ItemDetailDialog extends StatelessWidget {
               children: [
                 AspectRatio(
                   aspectRatio: 16 / 9,
-                  child: Image.asset(
-                    item.largePosterPath,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => Image.asset(
-                      item.thumbnailPath,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => Container(
-                        color: const Color(0xFF222222),
-                        child: const Center(
-                          child: Icon(Icons.movie, size: 60, color: Colors.white24),
-                        ),
-                      ),
-                    ),
-                  ),
+                  child: _buildBackdropImage(),
                 ),
                 Positioned.fill(
                   child: DecoratedBox(
@@ -87,32 +112,57 @@ class ItemDetailDialog extends StatelessWidget {
                         item.title,
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 32,
+                          fontSize: 28,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
                       const SizedBox(height: 12),
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          onPlay();
-                        },
-                        icon: const Icon(Icons.play_arrow, color: Colors.black, size: 26),
-                        label: const Text(
-                          'Play Video',
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                      Row(
+                        children: [
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              Navigator.of(context).pop();
+                              onPlay();
+                            },
+                            icon: const Icon(Icons.play_arrow, color: Colors.black, size: 24),
+                            label: const Text(
+                              'Putar Video',
+                              style: TextStyle(
+                                color: Colors.black,
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
                           ),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ),
+                          if (onEdit != null) ...[
+                            const SizedBox(width: 12),
+                            OutlinedButton.icon(
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                                onEdit!();
+                              },
+                              icon: const Icon(Icons.edit_note, color: Colors.white70, size: 20),
+                              label: const Text(
+                                'Edit Info & Poster',
+                                style: TextStyle(color: Colors.white70, fontSize: 13),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Colors.white30),
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ],
                   ),
@@ -143,34 +193,57 @@ class ItemDetailDialog extends StatelessWidget {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Text(
-                        item.category.toUpperCase(),
-                        style: const TextStyle(
-                          color: Color(0xFF46D369),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
+                      if (item.year != null) ...[
+                        const SizedBox(width: 10),
+                        Text(
+                          item.year!,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
+                      ],
+                      if (item.rating != null) ...[
+                        const SizedBox(width: 10),
+                        Row(
+                          children: [
+                            const Icon(Icons.star, color: Colors.amber, size: 14),
+                            const SizedBox(width: 4),
+                            Text(
+                              item.rating!,
+                              style: const TextStyle(
+                                color: Colors.amber,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(width: 12),
-                      Text(
-                        'Genre: ${item.genre}',
-                        style: const TextStyle(color: Colors.white70, fontSize: 13),
-                      ),
-                      const Spacer(),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                         decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: Colors.white38),
+                          borderRadius: BorderRadius.circular(2),
                         ),
                         child: const Text(
-                          'HD / 4K',
+                          '4K HDR',
                           style: TextStyle(
                             color: Colors.white70,
-                            fontSize: 11,
+                            fontSize: 10,
                             fontWeight: FontWeight.bold,
                           ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        item.genre,
+                        style: const TextStyle(
+                          color: Color(0xFF46D369),
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ],
@@ -180,10 +253,19 @@ class ItemDetailDialog extends StatelessWidget {
                     item.description,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 15,
+                      fontSize: 14,
                       height: 1.5,
                     ),
                   ),
+                  if (item.videoPath.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'Path: ${item.videoPath}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white30, fontSize: 11),
+                    ),
+                  ],
                 ],
               ),
             ),

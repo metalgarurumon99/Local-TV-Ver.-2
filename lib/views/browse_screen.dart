@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../models/media_item.dart';
@@ -9,6 +8,8 @@ import '../components/hero_billboard.dart';
 import '../components/content_row.dart';
 import '../components/in_app_player.dart';
 import '../components/item_detail_dialog.dart';
+import '../components/edit_metadata_dialog.dart';
+import '../components/manage_folders_dialog.dart';
 
 class BrowseScreen extends StatefulWidget {
   const BrowseScreen({super.key});
@@ -22,10 +23,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
   String _searchQuery = '';
   MediaItem? _currentlyPlaying;
 
-  // Local files and folder
-  String? _connectedFolderPath;
+  // Local files and multi-folder state
+  List<String> _connectedFolders = [];
   List<MediaItem> _localItems = [];
-  bool _isScanningFolder = false;
+  bool _isScanningFolders = false;
+  String? _scanStatus;
 
   @override
   void initState() {
@@ -34,51 +36,81 @@ class _BrowseScreenState extends State<BrowseScreen> {
   }
 
   Future<void> _loadInitialLibrary() async {
-    final savedPath = await LocalLibraryService.getSavedFolderPath();
-    if (savedPath != null && mounted) {
+    final folders = await LocalLibraryService.getConnectedFolders();
+    if (mounted) {
       setState(() {
-        _connectedFolderPath = savedPath;
-        _isScanningFolder = true;
+        _connectedFolders = folders;
+      });
+    }
+
+    if (folders.isNotEmpty) {
+      setState(() {
+        _isScanningFolders = true;
+        _scanStatus = 'Memuat koleksi film & metadata online...';
       });
 
-      final items = await LocalLibraryService.scanFolder(savedPath);
+      final items = await LocalLibraryService.scanAllFolders(
+        fetchOnlineMetadata: true,
+        onProgress: (msg) {
+          if (mounted) setState(() => _scanStatus = msg);
+        },
+      );
+
       if (mounted) {
         setState(() {
           _localItems = items;
-          _isScanningFolder = false;
+          _isScanningFolders = false;
+          _scanStatus = null;
         });
       }
     }
   }
 
-  Future<void> _connectFolder() async {
-    setState(() => _isScanningFolder = true);
-    final items = await LocalLibraryService.pickFolderAndScan();
-    final savedPath = await LocalLibraryService.getSavedFolderPath();
-
+  Future<void> _openManageFoldersDialog() async {
+    await showDialog(
+      context: context,
+      builder: (_) => ManageFoldersDialog(
+        onLibraryUpdated: () {
+          _loadInitialLibrary();
+        },
+      ),
+    );
+    // Reload folder list
+    final folders = await LocalLibraryService.getConnectedFolders();
     if (mounted) {
       setState(() {
-        _isScanningFolder = false;
-        if (items.isNotEmpty || savedPath != null) {
-          _connectedFolderPath = savedPath;
-          _localItems = items;
-          _activeCategory = 'local';
-        }
+        _connectedFolders = folders;
       });
-
-      if (items.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: const Color(0xFFE50914),
-            content: Text(
-              'Berhasil menghubungkan folder! Ditemukan ${items.length} file video.',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
     }
+  }
+
+  void _openEditMetadataDialog(MediaItem item) {
+    showDialog(
+      context: context,
+      builder: (_) => EditMetadataDialog(
+        item: item,
+        onSave: (updatedItem) async {
+          await LocalLibraryService.saveCustomMetadata(updatedItem.videoPath, updatedItem);
+          setState(() {
+            final idx = _localItems.indexWhere((it) => it.videoPath == updatedItem.videoPath);
+            if (idx != -1) {
+              _localItems[idx] = updatedItem;
+            } else {
+              _localItems.add(updatedItem);
+            }
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                backgroundColor: const Color(0xFFE50914),
+                content: Text('Informasi "${updatedItem.title}" berhasil disimpan!'),
+                duration: const Duration(seconds: 3),
+              ),
+            );
+          }
+        },
+      ),
+    );
   }
 
   MediaItem get _featuredItem {
@@ -105,6 +137,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       builder: (_) => ItemDetailDialog(
         item: item,
         onPlay: () => _playMedia(item),
+        onEdit: () => _openEditMetadataDialog(item),
       ),
     );
   }
@@ -152,6 +185,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (_currentlyPlaying != null) {
       return InAppPlayer(
         item: _currentlyPlaying!,
+        playlist: _localItems.isNotEmpty ? _localItems : SampleMediaData.allItems,
+        onMediaChanged: (newItem) {
+          setState(() {
+            _currentlyPlaying = newItem;
+          });
+        },
         onClose: () {
           setState(() {
             _currentlyPlaying = null;
@@ -189,11 +228,6 @@ class _BrowseScreenState extends State<BrowseScreen> {
       }
     }
 
-    final folderBaseName = _connectedFolderPath
-        ?.split(Platform.pathSeparator)
-        .where((s) => s.isNotEmpty)
-        .lastOrNull;
-
     return Scaffold(
       backgroundColor: const Color(0xFF111111),
       body: Stack(
@@ -203,6 +237,29 @@ class _BrowseScreenState extends State<BrowseScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Scanning status banner
+                if (_isScanningFolders && _scanStatus != null)
+                  Container(
+                    width: double.infinity,
+                    color: const Color(0xFFE50914),
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                    margin: const EdgeInsets.only(top: 70),
+                    child: Row(
+                      children: [
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _scanStatus!,
+                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+
                 // Hero Banner
                 if (_searchQuery.trim().length < 2 && _activeCategory != 'local')
                   HeroBillboard(
@@ -239,23 +296,17 @@ class _BrowseScreenState extends State<BrowseScreen> {
                           ),
                           const SizedBox(height: 8),
                           const Text(
-                            'Hubungkan folder di komputer Anda yang berisi file film (.mp4, .mkv, .avi, .webm).\nSemua film akan otomatis terdeteksi dan siap diputar kapan saja.',
+                            'Hubungkan satu atau beberapa folder koleksi video Anda di komputer.\nSemua film akan otomatis dimuat dan metadata/posternya diambil secara otomatis.',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: Colors.white60, fontSize: 14),
                           ),
                           const SizedBox(height: 24),
                           ElevatedButton.icon(
-                            onPressed: _isScanningFolder ? null : _connectFolder,
-                            icon: _isScanningFolder
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                  )
-                                : const Icon(Icons.drive_folder_upload, color: Colors.white),
-                            label: Text(
-                              _isScanningFolder ? 'Sedang Memindai Folder...' : 'Pilih Folder Film Sekarang',
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                            onPressed: _openManageFoldersDialog,
+                            icon: const Icon(Icons.folder_copy_rounded, color: Colors.white),
+                            label: const Text(
+                              'Kelola & Tambah Folder Film',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFFE50914),
@@ -281,6 +332,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                           items: entry.value,
                           onPlay: _playMedia,
                           onSelect: _showItemDetails,
+                          onEdit: _openEditMetadataDialog,
                         );
                       }).toList(),
                     ),
@@ -298,7 +350,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             right: 0,
             child: NetflixNavbar(
               activeCategory: _activeCategory,
-              connectedFolderName: folderBaseName,
+              folderCount: _connectedFolders.length,
               onCategoryChanged: (cat) {
                 setState(() {
                   _activeCategory = cat;
@@ -311,7 +363,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                 });
               },
               onPickLocalFile: _pickLocalFile,
-              onConnectFolder: _connectFolder,
+              onManageFolders: _openManageFoldersDialog,
             ),
           ),
         ],

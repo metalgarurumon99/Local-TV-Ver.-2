@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/media_item.dart';
 
@@ -13,6 +14,41 @@ class HeroBillboard extends StatelessWidget {
     required this.onMoreInfo,
   });
 
+  Widget _buildBackgroundImage() {
+    if (featuredItem.isNetworkImage) {
+      return Image.network(
+        featuredItem.customThumbnail!,
+        fit: BoxFit.cover,
+        alignment: Alignment.topCenter,
+        errorBuilder: (_, _, _) => _buildFallbackImage(),
+      );
+    }
+    if (featuredItem.customThumbnail != null &&
+        File(featuredItem.customThumbnail!).existsSync()) {
+      return Image.file(
+        File(featuredItem.customThumbnail!),
+        fit: BoxFit.cover,
+        alignment: Alignment.topCenter,
+        errorBuilder: (_, _, _) => _buildFallbackImage(),
+      );
+    }
+    return _buildFallbackImage();
+  }
+
+  Widget _buildFallbackImage() {
+    return Image.asset(
+      'assets/images/misc/joker1.jpg',
+      fit: BoxFit.cover,
+      alignment: Alignment.topCenter,
+      errorBuilder: (_, _, _) => Container(
+        color: const Color(0xFF141414),
+        child: const Center(
+          child: Icon(Icons.movie, size: 80, color: Colors.white24),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final double screenHeight = MediaQuery.of(context).size.height;
@@ -23,17 +59,7 @@ class HeroBillboard extends StatelessWidget {
         SizedBox(
           height: screenHeight * 0.65,
           width: double.infinity,
-          child: Image.asset(
-            'assets/images/misc/joker1.jpg',
-            fit: BoxFit.cover,
-            alignment: Alignment.topCenter,
-            errorBuilder: (_, _, _) => Container(
-              color: const Color(0xFF141414),
-              child: const Center(
-                child: Icon(Icons.movie, size: 80, color: Colors.white24),
-              ),
-            ),
-          ),
+          child: _buildBackgroundImage(),
         ),
 
         // Dark Gradients Overlay (Netflix style vignette)
