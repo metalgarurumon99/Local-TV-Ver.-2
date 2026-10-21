@@ -1,3 +1,43 @@
+class Episode {
+  final String id;
+  final String title;
+  final String videoPath;
+  final int season;
+  final int episodeNumber;
+  final int? fileSize;
+  final String? duration;
+
+  const Episode({
+    required this.id,
+    required this.title,
+    required this.videoPath,
+    this.season = 1,
+    this.episodeNumber = 1,
+    this.fileSize,
+    this.duration,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'videoPath': videoPath,
+    'season': season,
+    'episodeNumber': episodeNumber,
+    'fileSize': fileSize,
+    'duration': duration,
+  };
+
+  factory Episode.fromJson(Map<String, dynamic> json) => Episode(
+    id: json['id'] as String? ?? '',
+    title: json['title'] as String? ?? '',
+    videoPath: json['videoPath'] as String? ?? '',
+    season: (json['season'] as num?)?.toInt() ?? 1,
+    episodeNumber: (json['episodeNumber'] as num?)?.toInt() ?? 1,
+    fileSize: (json['fileSize'] as num?)?.toInt(),
+    duration: json['duration'] as String?,
+  );
+}
+
 class MediaItem {
   final String id;
   final String title;
@@ -12,6 +52,8 @@ class MediaItem {
   final String? rating;
   final bool isManualEdit;
   final String? folderPath;
+  final bool isSeries;
+  final List<Episode> episodes;
 
   const MediaItem({
     required this.id,
@@ -27,7 +69,11 @@ class MediaItem {
     this.rating,
     this.isManualEdit = false,
     this.folderPath,
+    this.isSeries = false,
+    this.episodes = const [],
   });
+
+  int get episodeCount => episodes.length;
 
   bool get isNetworkImage {
     if (customThumbnail == null) return false;
@@ -63,6 +109,8 @@ class MediaItem {
     String? rating,
     bool? isManualEdit,
     String? folderPath,
+    bool? isSeries,
+    List<Episode>? episodes,
   }) {
     return MediaItem(
       id: id ?? this.id,
@@ -78,6 +126,8 @@ class MediaItem {
       rating: rating ?? this.rating,
       isManualEdit: isManualEdit ?? this.isManualEdit,
       folderPath: folderPath ?? this.folderPath,
+      isSeries: isSeries ?? this.isSeries,
+      episodes: episodes ?? this.episodes,
     );
   }
 
@@ -96,15 +146,22 @@ class MediaItem {
       'rating': rating,
       'isManualEdit': isManualEdit,
       'folderPath': folderPath,
+      'isSeries': isSeries,
+      'episodes': episodes.map((e) => e.toJson()).toList(),
     };
   }
 
   factory MediaItem.fromJson(Map<String, dynamic> json) {
+    var rawEpisodes = json['episodes'] as List<dynamic>? ?? [];
+    var episodeList = rawEpisodes
+        .map((e) => Episode.fromJson(e as Map<String, dynamic>))
+        .toList();
+
     return MediaItem(
       id: json['id'] as String? ?? 'id-${DateTime.now().millisecondsSinceEpoch}',
-      title: json['title'] as String? ?? 'Untitled',
+      title: json['title'] as String? ?? 'Tanpa Judul',
       description: json['description'] as String? ?? '',
-      genre: json['genre'] as String? ?? 'Local',
+      genre: json['genre'] as String? ?? 'Koleksi Lokal',
       maturity: json['maturity'] as String? ?? '13',
       slug: json['slug'] as String? ?? 'local-video',
       category: json['category'] as String? ?? 'films',
@@ -114,6 +171,8 @@ class MediaItem {
       rating: json['rating'] as String?,
       isManualEdit: json['isManualEdit'] as bool? ?? false,
       folderPath: json['folderPath'] as String?,
+      isSeries: json['isSeries'] as bool? ?? false,
+      episodes: episodeList,
     );
   }
 }

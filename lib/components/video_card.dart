@@ -134,6 +134,61 @@ class _VideoCardState extends State<VideoCard> {
                   child: _buildThumbnail(),
                 ),
 
+                // Permanent Bottom Title Bar (Visible when not hovered)
+                if (!_isHovered)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withValues(alpha: 0.85),
+                          ],
+                        ),
+                      ),
+                      child: Text(
+                        widget.item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Series Episode Count Badge
+                if (widget.item.isSeries && widget.item.episodes.isNotEmpty)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE50914).withValues(alpha: 0.9),
+                        borderRadius: BorderRadius.circular(3),
+                        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 4)],
+                      ),
+                      child: Text(
+                        '${widget.item.episodes.length} EPS',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+
                 // Hover Info Overlay
                 Positioned.fill(
                   child: AnimatedOpacity(

@@ -94,11 +94,11 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
           SizedBox(width: gap),
 
           // Categories Links
+          _buildNavLink('all', 'Semua'),
+          SizedBox(width: gap),
           _buildNavLink('films', 'Films'),
           SizedBox(width: gap),
           _buildNavLink('series', 'Series'),
-          SizedBox(width: gap),
-          _buildNavLink('local', 'Folder Film'),
           SizedBox(width: gap),
 
           // Manage Folders Button

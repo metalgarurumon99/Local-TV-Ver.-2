@@ -19,9 +19,10 @@ class BrowseScreen extends StatefulWidget {
 }
 
 class _BrowseScreenState extends State<BrowseScreen> {
-  String _activeCategory = 'films';
+  String _activeCategory = 'all'; // 'all', 'films', 'series'
   String _searchQuery = '';
   MediaItem? _currentlyPlaying;
+  List<MediaItem> _currentPlayingPlaylist = [];
 
   // Local files and multi-folder state
   List<String> _connectedFolders = [];
@@ -46,7 +47,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (folders.isNotEmpty) {
       setState(() {
         _isScanningFolders = true;
-        _scanStatus = 'Memuat koleksi film & metadata online...';
+        _scanStatus = 'Memindai folder film & serial Anda...';
       });
 
       final items = await LocalLibraryService.scanAllFolders(
@@ -90,9 +91,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
       builder: (_) => EditMetadataDialog(
         item: item,
         onSave: (updatedItem) async {
-          await LocalLibraryService.saveCustomMetadata(updatedItem.videoPath, updatedItem);
+          await LocalLibraryService.saveCustomMetadata(updatedItem.id, updatedItem);
           setState(() {
-            final idx = _localItems.indexWhere((it) => it.videoPath == updatedItem.videoPath);
+            final idx = _localItems.indexWhere((it) => it.id == updatedItem.id || it.title == updatedItem.title);
             if (idx != -1) {
               _localItems[idx] = updatedItem;
             } else {
@@ -113,21 +114,111 @@ class _BrowseScreenState extends State<BrowseScreen> {
     );
   }
 
-  MediaItem get _featuredItem {
-    if (_activeCategory == 'local' && _localItems.isNotEmpty) {
+  MediaItem? get _featuredItem {
+    if (_localItems.isNotEmpty) {
+      if (_activeCategory == 'series') {
+        final seriesList = _localItems.where((it) => it.isSeries).toList();
+        if (seriesList.isNotEmpty) return seriesList.first;
+      } else if (_activeCategory == 'films') {
+        final filmList = _localItems.where((it) => !it.isSeries).toList();
+        if (filmList.isNotEmpty) return filmList.first;
+      }
       return _localItems.first;
     }
-    final list = SampleMediaData.allItems
-        .where((i) => i.category == _activeCategory)
-        .toList();
-    if (list.isNotEmpty) return list.first;
-    if (_localItems.isNotEmpty) return _localItems.first;
-    return SampleMediaData.allItems.first;
+    // Only return sample item if absolutely no local items exist
+    return SampleMediaData.allItems.isNotEmpty ? SampleMediaData.allItems.first : null;
   }
 
   void _playMedia(MediaItem item) {
+    List<MediaItem> playlist = [];
+
+    if (item.isSeries && item.episodes.isNotEmpty) {
+      // Build playlist containing each episode of this series
+      playlist = item.episodes.map((ep) {
+        return MediaItem(
+          id: ep.id,
+          title: '${item.title} - ${ep.title}',
+          description: item.description,
+          genre: item.genre,
+          maturity: item.maturity,
+          slug: item.slug,
+          category: item.category,
+          videoPath: ep.videoPath,
+          customThumbnail: item.customThumbnail,
+          year: item.year,
+          rating: item.rating,
+          isSeries: true,
+        );
+      }).toList();
+
+      final firstEp = item.episodes.first;
+      final playItem = MediaItem(
+        id: firstEp.id,
+        title: '${item.title} - ${firstEp.title}',
+        description: item.description,
+        genre: item.genre,
+        maturity: item.maturity,
+        slug: item.slug,
+        category: item.category,
+        videoPath: firstEp.videoPath,
+        customThumbnail: item.customThumbnail,
+        year: item.year,
+        rating: item.rating,
+        isSeries: true,
+      );
+
+      setState(() {
+        _currentlyPlaying = playItem;
+        _currentPlayingPlaylist = playlist;
+      });
+    } else {
+      // Standalone movie: playlist is all movies in library
+      final movies = _localItems.where((it) => !it.isSeries).toList();
+      playlist = movies.isNotEmpty ? movies : [item];
+
+      setState(() {
+        _currentlyPlaying = item;
+        _currentPlayingPlaylist = playlist;
+      });
+    }
+  }
+
+  void _playSpecificEpisode(MediaItem parentItem, Episode episode) {
+    final playlist = parentItem.episodes.map((ep) {
+      return MediaItem(
+        id: ep.id,
+        title: '${parentItem.title} - ${ep.title}',
+        description: parentItem.description,
+        genre: parentItem.genre,
+        maturity: parentItem.maturity,
+        slug: parentItem.slug,
+        category: parentItem.category,
+        videoPath: ep.videoPath,
+        customThumbnail: parentItem.customThumbnail,
+        year: parentItem.year,
+        rating: parentItem.rating,
+        isSeries: true,
+      );
+    }).toList();
+
+    final playItem = MediaItem(
+      id: episode.id,
+      title: '${parentItem.title} - ${episode.title}',
+      description: parentItem.description,
+      genre: parentItem.genre,
+      maturity: parentItem.maturity,
+      slug: parentItem.slug,
+      category: parentItem.category,
+      videoPath: episode.videoPath,
+      customThumbnail: parentItem.customThumbnail,
+      year: parentItem.year,
+      rating: parentItem.rating,
+      isSeries: true,
+    );
+
     setState(() {
-      _currentlyPlaying = item;
+      _currentlyPlaying = playItem;
+      _currentPlayingPlaylist = playlist;
     });
   }
 
@@ -137,6 +228,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       builder: (_) => ItemDetailDialog(
         item: item,
         onPlay: () => _playMedia(item),
+        onPlayEpisode: (ep) => _playSpecificEpisode(item, ep),
         onEdit: () => _openEditMetadataDialog(item),
       ),
     );
@@ -145,7 +237,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
   Future<void> _pickLocalFile() async {
     try {
       final files = await FilePicker.pickFiles(
-        dialogTitle: 'Pilih File Video untuk Diputar',
+        dialogTitle: 'Pilih File Video untuk Diputar Langsung',
         type: FileType.custom,
         allowedExtensions: ['mp4', 'mkv', 'avi', 'mov', 'webm', 'ts', 'm4v'],
       );
@@ -162,7 +254,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
           genre: 'File Lokal',
           maturity: '13',
           slug: 'local-file',
-          category: _activeCategory,
+          category: 'films',
           videoPath: filePath,
         );
 
@@ -179,13 +271,81 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
   }
 
+  Map<String, List<MediaItem>> _buildDisplayGroups() {
+    // 1. Search filter
+    if (_searchQuery.trim().length >= 2) {
+      final q = _searchQuery.toLowerCase();
+      final filtered = _localItems.where((item) {
+        return item.title.toLowerCase().contains(q) ||
+            item.genre.toLowerCase().contains(q) ||
+            item.description.toLowerCase().contains(q);
+      }).toList();
+
+      return {'Hasil Pencarian "$_searchQuery" (${filtered.length})': filtered};
+    }
+
+    // 2. If user has local items: group user items exclusively
+    if (_localItems.isNotEmpty) {
+      final seriesList = _localItems.where((it) => it.isSeries).toList();
+      final filmsList = _localItems.where((it) => !it.isSeries).toList();
+
+      if (_activeCategory == 'films') {
+        if (filmsList.isEmpty) {
+          return {'Film Layar Lebar': []};
+        }
+        return _groupByGenre(filmsList, 'Film');
+      }
+
+      if (_activeCategory == 'series') {
+        if (seriesList.isEmpty) {
+          return {'Serial TV & Anime': []};
+        }
+        return _groupByGenre(seriesList, 'Serial');
+      }
+
+      // 'all' / Home category: Show clean rows
+      final Map<String, List<MediaItem>> groups = {};
+
+      if (seriesList.isNotEmpty) {
+        groups['📺 Serial TV & Anime (${seriesList.length})'] = seriesList;
+      }
+      if (filmsList.isNotEmpty) {
+        groups['🎬 Film Layar Lebar (${filmsList.length})'] = filmsList;
+      }
+
+      // Add genre specific rows if there are multiple items
+      final genreGroups = _groupByGenre(_localItems, '');
+      genreGroups.forEach((k, v) {
+        if (!groups.containsKey(k) && v.isNotEmpty) {
+          groups[k] = v;
+        }
+      });
+
+      return groups;
+    }
+
+    // 3. If no local items connected, return empty (empty state banner will be rendered)
+    return {};
+  }
+
+  Map<String, List<MediaItem>> _groupByGenre(List<MediaItem> items, String prefix) {
+    final Map<String, List<MediaItem>> map = {};
+    for (final item in items) {
+      // Split comma-separated genres if any
+      final g = item.genre.split(',').first.trim();
+      final key = prefix.isNotEmpty ? '$prefix • $g' : g;
+      map.putIfAbsent(key, () => []).add(item);
+    }
+    return map;
+  }
+
   @override
   Widget build(BuildContext context) {
     // If playing, show full embedded player overlay
     if (_currentlyPlaying != null) {
       return InAppPlayer(
         item: _currentlyPlaying!,
-        playlist: _localItems.isNotEmpty ? _localItems : SampleMediaData.allItems,
+        playlist: _currentPlayingPlaylist.isNotEmpty ? _currentPlayingPlaylist : [_currentlyPlaying!],
         onMediaChanged: (newItem) {
           setState(() {
             _currentlyPlaying = newItem;
@@ -194,39 +354,14 @@ class _BrowseScreenState extends State<BrowseScreen> {
         onClose: () {
           setState(() {
             _currentlyPlaying = null;
+            _currentPlayingPlaylist = [];
           });
         },
       );
     }
 
-    // Determine content to display
-    Map<String, List<MediaItem>> displayGroups = {};
-
-    if (_searchQuery.trim().length >= 2) {
-      final q = _searchQuery.toLowerCase();
-      final allAvailable = [..._localItems, ...SampleMediaData.allItems];
-      final filtered = allAvailable.where((item) {
-        return item.title.toLowerCase().contains(q) ||
-            item.genre.toLowerCase().contains(q) ||
-            item.description.toLowerCase().contains(q);
-      }).toList();
-
-      displayGroups = {'Hasil Pencarian "$_searchQuery"': filtered};
-    } else if (_activeCategory == 'local') {
-      if (_localItems.isNotEmpty) {
-        displayGroups = {
-          'Semua Film & Serial di Folder Lokal (${_localItems.length})': _localItems,
-        };
-      }
-    } else {
-      displayGroups = Map.from(SampleMediaData.getGrouped(_activeCategory));
-      if (_localItems.isNotEmpty) {
-        displayGroups = {
-          '📁 Koleksi Folder Lokal Saya (${_localItems.length})': _localItems,
-          ...displayGroups,
-        };
-      }
-    }
+    final displayGroups = _buildDisplayGroups();
+    final featured = _featuredItem;
 
     return Scaffold(
       backgroundColor: const Color(0xFF111111),
@@ -260,57 +395,59 @@ class _BrowseScreenState extends State<BrowseScreen> {
                     ),
                   ),
 
-                // Hero Banner
-                if (_searchQuery.trim().length < 2 && _activeCategory != 'local')
+                // Hero Banner (Featured item from user's local collection)
+                if (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
                   HeroBillboard(
-                    featuredItem: _featuredItem,
-                    onPlay: () => _playMedia(_featuredItem),
-                    onMoreInfo: () => _showItemDetails(_featuredItem),
+                    featuredItem: featured,
+                    onPlay: () => _playMedia(featured),
+                    onMoreInfo: () => _showItemDetails(featured),
                   )
+                else if (_localItems.isNotEmpty)
+                  const SizedBox(height: 100)
                 else
-                  const SizedBox(height: 100),
+                  const SizedBox(height: 80),
 
-                // Special Banner for Local Category if empty
-                if (_activeCategory == 'local' && _localItems.isEmpty)
+                // Empty State if no folder connected or no items found
+                if (_localItems.isEmpty && !_isScanningFolders)
                   Center(
                     child: Container(
                       margin: const EdgeInsets.symmetric(horizontal: 40, vertical: 40),
                       padding: const EdgeInsets.all(40),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1A1A1A),
+                        color: const Color(0xFF181818),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.white12),
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.folder_open_rounded, size: 64, color: Color(0xFFE50914)),
-                          const SizedBox(height: 16),
+                          const Icon(Icons.folder_open_rounded, size: 72, color: Color(0xFFE50914)),
+                          const SizedBox(height: 20),
                           const Text(
-                            'Belum Ada Folder Film yang Terhubung',
+                            'Selamat Datang di Local TV',
                             style: TextStyle(
                               color: Colors.white,
-                              fontSize: 22,
+                              fontSize: 26,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 10),
                           const Text(
-                            'Hubungkan satu atau beberapa folder koleksi video Anda di komputer.\nSemua film akan otomatis dimuat dan metadata/posternya diambil secara otomatis.',
+                            'Hubungkan folder film atau serial Anda di komputer.\nSetiap film & serial akan otomatis dikelompokkan per judul,\nlengkap dengan poster resmi, sinopsis, dan daftar episode.',
                             textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.white60, fontSize: 14),
+                            style: TextStyle(color: Colors.white60, fontSize: 14, height: 1.5),
                           ),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 28),
                           ElevatedButton.icon(
                             onPressed: _openManageFoldersDialog,
-                            icon: const Icon(Icons.folder_copy_rounded, color: Colors.white),
+                            icon: const Icon(Icons.add_to_photos_rounded, color: Colors.white),
                             label: const Text(
-                              'Kelola & Tambah Folder Film',
+                              'Hubungkan Folder Film & Serial',
                               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFFE50914),
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                             ),
                           ),
@@ -319,14 +456,26 @@ class _BrowseScreenState extends State<BrowseScreen> {
                     ),
                   ),
 
-                // Content Rows
+                // Content Rows from User Library
                 if (displayGroups.isNotEmpty)
                   Transform.translate(
-                    offset: (_searchQuery.trim().length < 2 && _activeCategory != 'local')
+                    offset: (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
                         ? const Offset(0, -60)
                         : Offset.zero,
                     child: Column(
                       children: displayGroups.entries.map((entry) {
+                        if (entry.value.isEmpty) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                'Tidak ada video dalam kategori "${entry.key}".',
+                                style: const TextStyle(color: Colors.white38, fontSize: 14),
+                              ),
+                            ),
+                          );
+                        }
                         return ContentRow(
                           title: entry.key,
                           items: entry.value,
@@ -338,12 +487,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
                     ),
                   ),
 
-                const SizedBox(height: 50),
+                const SizedBox(height: 60),
               ],
             ),
           ),
 
-          // Floating Top Navbar
+          // Floating Top Netflix Navbar
           Positioned(
             top: 0,
             left: 0,
