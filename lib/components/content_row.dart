@@ -41,26 +41,31 @@ class _ContentRowState extends State<ContentRow> {
   }
 
   void _onScroll() {
-    setState(() {
-      _showLeftChevron = _scrollController.offset > 20;
-      _showRightChevron = _scrollController.offset <
-          (_scrollController.position.maxScrollExtent - 20);
-    });
+    if (!_scrollController.hasClients) return;
+    final showLeft = _scrollController.offset > 20;
+    final showRight = _scrollController.offset <
+        (_scrollController.position.maxScrollExtent - 20);
+    if (showLeft != _showLeftChevron || showRight != _showRightChevron) {
+      setState(() {
+        _showLeftChevron = showLeft;
+        _showRightChevron = showRight;
+      });
+    }
   }
 
   void _scrollLeft() {
     _scrollController.animateTo(
       _scrollController.offset - 600,
-      duration: const Duration(milliseconds: 400),
-      curve: Curves.easeInOutCubic,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOutCubic,
     );
   }
 
   void _scrollRight() {
     _scrollController.animateTo(
       _scrollController.offset + 600,
-      duration: const Duration(milliseconds: 400),
-      curve: Curves.easeInOutCubic,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOutCubic,
     );
   }
 
@@ -93,15 +98,18 @@ class _ContentRowState extends State<ContentRow> {
               ListView.builder(
                 controller: _scrollController,
                 scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 50),
                 itemCount: widget.items.length,
                 itemBuilder: (context, index) {
                   final item = widget.items[index];
-                  return VideoCard(
-                    item: item,
-                    onPlay: () => widget.onPlay(item),
-                    onSelect: () => widget.onSelect(item),
-                    onEdit: widget.onEdit != null ? () => widget.onEdit!(item) : null,
+                  return RepaintBoundary(
+                    child: VideoCard(
+                      item: item,
+                      onPlay: () => widget.onPlay(item),
+                      onSelect: () => widget.onSelect(item),
+                      onEdit: widget.onEdit != null ? () => widget.onEdit!(item) : null,
+                    ),
                   );
                 },
               ),

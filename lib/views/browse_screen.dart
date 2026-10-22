@@ -410,15 +410,18 @@ class _BrowseScreenState extends State<BrowseScreen> {
         children: [
           // Scrollable Content Catalog
           SingleChildScrollView(
+            physics: const BouncingScrollPhysics(),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // Hero Banner (Featured item from user's local collection)
                 if (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
-                  HeroBillboard(
-                    featuredItem: featured,
-                    onPlay: () => _playMedia(featured),
-                    onMoreInfo: () => _showItemDetails(featured),
+                  RepaintBoundary(
+                    child: HeroBillboard(
+                      featuredItem: featured,
+                      onPlay: () => _playMedia(featured),
+                      onMoreInfo: () => _showItemDetails(featured),
+                    ),
                   )
                 else if (_localItems.isNotEmpty)
                   const SizedBox(height: 100)
@@ -515,24 +518,26 @@ class _BrowseScreenState extends State<BrowseScreen> {
             top: 0,
             left: 0,
             right: 0,
-            child: NetflixNavbar(
-              activeCategory: _activeCategory,
-              folderCount: _connectedFolders.length,
-              isScanning: _isScanningFolders,
-              onCategoryChanged: (cat) {
-                setState(() {
-                  _activeCategory = cat;
-                  _searchQuery = '';
-                });
-              },
-              onSearchChanged: (query) {
-                setState(() {
-                  _searchQuery = query;
-                });
-              },
-              onPickLocalFile: _pickLocalFile,
-              onManageFolders: _openManageFoldersDialog,
-              onSyncLibrary: () => _loadInitialLibrary(forceFullRescan: true),
+            child: RepaintBoundary(
+              child: NetflixNavbar(
+                activeCategory: _activeCategory,
+                folderCount: _connectedFolders.length,
+                isScanning: _isScanningFolders,
+                onCategoryChanged: (cat) {
+                  setState(() {
+                    _activeCategory = cat;
+                    _searchQuery = '';
+                  });
+                },
+                onSearchChanged: (query) {
+                  setState(() {
+                    _searchQuery = query;
+                  });
+                },
+                onPickLocalFile: _pickLocalFile,
+                onManageFolders: _openManageFoldersDialog,
+                onSyncLibrary: () => _loadInitialLibrary(forceFullRescan: true),
+              ),
             ),
           ),
 

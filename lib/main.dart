@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
@@ -35,6 +36,7 @@ class LocalTvApp extends StatelessWidget {
     return MaterialApp(
       title: 'Local TV Ver. 2',
       debugShowCheckedModeBanner: false,
+      scrollBehavior: const SmoothDesktopScrollBehavior(),
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF111111),
@@ -44,6 +46,26 @@ class LocalTvApp extends StatelessWidget {
         ),
       ),
       home: const BrowseScreen(),
+    );
+  }
+}
+
+/// Enables ultra-smooth momentum scrolling and drag interaction on desktop (60Hz / 120Hz / 144Hz)
+class SmoothDesktopScrollBehavior extends MaterialScrollBehavior {
+  const SmoothDesktopScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      };
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) {
+    return const BouncingScrollPhysics(
+      parent: AlwaysScrollableScrollPhysics(),
     );
   }
 }
