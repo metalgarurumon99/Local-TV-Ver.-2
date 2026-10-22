@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
+import 'components/splash_screen.dart';
 import 'views/browse_screen.dart';
 
 void main() async {
@@ -14,10 +15,11 @@ void main() async {
   await windowManager.ensureInitialized();
 
   const windowOptions = WindowOptions(
-    minimumSize: Size(960, 580),
+    size: Size(520, 340),
     center: true,
     title: 'Local TV Ver. 2',
-    backgroundColor: Color(0xFF111111),
+    backgroundColor: Colors.transparent,
+    skipTaskbar: false,
     titleBarStyle: TitleBarStyle.hidden,
   );
 
@@ -29,8 +31,25 @@ void main() async {
   runApp(const LocalTvApp());
 }
 
-class LocalTvApp extends StatelessWidget {
+class LocalTvApp extends StatefulWidget {
   const LocalTvApp({super.key});
+
+  @override
+  State<LocalTvApp> createState() => _LocalTvAppState();
+}
+
+class _LocalTvAppState extends State<LocalTvApp> {
+  bool _isReady = false;
+
+  Future<void> _onAppReady() async {
+    await windowManager.setMinimumSize(const Size(960, 580));
+    await windowManager.maximize();
+    if (mounted) {
+      setState(() {
+        _isReady = true;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +65,12 @@ class LocalTvApp extends StatelessWidget {
           surface: Color(0xFF181818),
         ),
       ),
-      home: const BrowseScreen(),
+      home: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 400),
+        child: _isReady
+            ? const BrowseScreen(key: ValueKey('browse_screen'))
+            : SplashScreen(key: const ValueKey('splash_screen'), onReady: _onAppReady),
+      ),
     );
   }
 }
