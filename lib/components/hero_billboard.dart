@@ -9,12 +9,22 @@ class HeroBillboard extends StatefulWidget {
   final MediaItem featuredItem;
   final VoidCallback onPlay;
   final VoidCallback onMoreInfo;
+  final int currentIndex;
+  final int totalCount;
+  final VoidCallback? onNext;
+  final VoidCallback? onPrev;
+  final ValueChanged<int>? onSelectIndex;
 
   const HeroBillboard({
     super.key,
     required this.featuredItem,
     required this.onPlay,
     required this.onMoreInfo,
+    this.currentIndex = 0,
+    this.totalCount = 1,
+    this.onNext,
+    this.onPrev,
+    this.onSelectIndex,
   });
 
   @override
@@ -171,9 +181,15 @@ class _HeroBillboardState extends State<HeroBillboard> {
       width: double.infinity,
       child: Stack(
         children: [
-          // 1. Static Poster Background
+          // 1. Static Poster Background with Crossfade Transition
           Positioned.fill(
-            child: _buildBackgroundImage(),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 600),
+              child: KeyedSubtree(
+                key: ValueKey<String>('hero-bg-${widget.featuredItem.id}-${widget.featuredItem.videoPath}'),
+                child: SizedBox.expand(child: _buildBackgroundImage()),
+              ),
+            ),
           ),
 
           // 2. High-Quality Video Preview Layer with Smooth Crossfade
@@ -360,28 +376,113 @@ class _HeroBillboardState extends State<HeroBillboard> {
             ),
           ),
 
-          // 5. Netflix-Style Audio Toggle Button (Bottom Right)
-          if (_videoController != null && _isVideoReady)
-            Positioned(
-              right: 50,
-              bottom: 45,
-              child: InkWell(
-                onTap: _toggleMute,
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.6),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white38, width: 1),
+          // 5. Netflix-Style Audio Toggle Button & Dynamic Carousel Navigation (Bottom Right)
+          Positioned(
+            right: 50,
+            bottom: 45,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Dynamic Carousel Navigation (if more than 1 item)
+                if (widget.totalCount > 1) ...[
+                  if (widget.onPrev != null)
+                    InkWell(
+                      onTap: () {
+                        _stopPreview();
+                        widget.onPrev!();
+                      },
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.all(7),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 0.8),
+                        ),
+                        child: const Icon(Icons.arrow_back_ios_new_rounded, size: 13, color: Colors.white),
+                      ),
+                    ),
+                  const SizedBox(width: 8),
+                  // Progress / Index indicator bars
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: List.generate(widget.totalCount, (index) {
+                      final isActive = index == widget.currentIndex;
+                      return GestureDetector(
+                        onTap: () {
+                          if (index != widget.currentIndex) {
+                            _stopPreview();
+                            widget.onSelectIndex?.call(index);
+                          }
+                        },
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            margin: const EdgeInsets.symmetric(horizontal: 3),
+                            width: isActive ? 24 : 8,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: isActive ? const Color(0xFFE50914) : Colors.white38,
+                              borderRadius: BorderRadius.circular(2),
+                              boxShadow: isActive
+                                  ? [
+                                      BoxShadow(
+                                        color: const Color(0xFFE50914).withValues(alpha: 0.7),
+                                        blurRadius: 6,
+                                        spreadRadius: 1,
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
                   ),
-                  child: Icon(
-                    _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                    color: Colors.white,
-                    size: 20,
+                  const SizedBox(width: 8),
+                  if (widget.onNext != null)
+                    InkWell(
+                      onTap: () {
+                        _stopPreview();
+                        widget.onNext!();
+                      },
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.all(7),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 0.8),
+                        ),
+                        child: const Icon(Icons.arrow_forward_ios_rounded, size: 13, color: Colors.white),
+                      ),
+                    ),
+                  const SizedBox(width: 14),
+                ],
+
+                // Audio Mute Toggle Button
+                if (_videoController != null && _isVideoReady)
+                  InkWell(
+                    onTap: _toggleMute,
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white38, width: 1),
+                      ),
+                      child: Icon(
+                        _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
                   ),
-                ),
-              ),
+              ],
             ),
+          ),
         ],
       ),
     );

@@ -66,42 +66,7 @@ class _CustomAppTitleBarState extends State<CustomAppTitleBar> with WindowListen
       ),
       child: Row(
         children: [
-          // App Icon / Logo Badge
-          Padding(
-            padding: const EdgeInsets.only(left: 14, right: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFE50914),
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                  child: const Text(
-                    'LOCAL TV',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 9,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  widget.title,
-                  style: const TextStyle(
-                    color: Colors.white60,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Center Draggable Window Area
+          // Clean Draggable Window Area (Entire left and center)
           Expanded(
             child: DragToMoveArea(
               child: GestureDetector(

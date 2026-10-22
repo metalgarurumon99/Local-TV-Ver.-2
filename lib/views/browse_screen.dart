@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../models/media_item.dart';
@@ -34,11 +36,22 @@ class _BrowseScreenState extends State<BrowseScreen> {
   bool _isScanningFolders = false;
   String? _scanStatus;
 
+  // Dynamic Featured Rotation State
+  int _featuredIndex = 0;
+  Timer? _featuredRotationTimer;
+
   @override
   void initState() {
     super.initState();
     _loadInitialLibrary();
     _loadWatchHistory();
+    _startFeaturedRotation();
+  }
+
+  @override
+  void dispose() {
+    _featuredRotationTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadWatchHistory() async {
@@ -85,8 +98,13 @@ class _BrowseScreenState extends State<BrowseScreen> {
         _connectedFolders = folders;
         if (cached.isNotEmpty && !forceFullRescan) {
           _localItems = cached;
+          final candidates = _featuredCandidates;
+          if (candidates.isNotEmpty) {
+            _featuredIndex = math.Random().nextInt(candidates.length);
+          }
         }
       });
+      _startFeaturedRotation();
     }
 
     if (folders.isNotEmpty) {
@@ -179,19 +197,73 @@ class _BrowseScreenState extends State<BrowseScreen> {
     );
   }
 
-  MediaItem? get _featuredItem {
+  List<MediaItem> get _featuredCandidates {
+    List<MediaItem> source = [];
     if (_localItems.isNotEmpty) {
       if (_activeCategory == 'series') {
-        final seriesList = _localItems.where((it) => it.isSeries).toList();
-        if (seriesList.isNotEmpty) return seriesList.first;
+        source = _localItems.where((it) => it.isSeries).toList();
       } else if (_activeCategory == 'films') {
-        final filmList = _localItems.where((it) => !it.isSeries).toList();
-        if (filmList.isNotEmpty) return filmList.first;
+        source = _localItems.where((it) => !it.isSeries).toList();
+      } else {
+        source = List<MediaItem>.from(_localItems);
       }
-      return _localItems.first;
     }
-    // Only return sample item if absolutely no local items exist
-    return SampleMediaData.allItems.isNotEmpty ? SampleMediaData.allItems.first : null;
+
+    if (source.isEmpty) {
+      source = SampleMediaData.allItems;
+    }
+
+    return source.take(8).toList();
+  }
+
+  MediaItem? get _featuredItem {
+    final candidates = _featuredCandidates;
+    if (candidates.isEmpty) return null;
+    final safeIndex = _featuredIndex.clamp(0, candidates.length - 1);
+    return candidates[safeIndex];
+  }
+
+  void _startFeaturedRotation() {
+    _featuredRotationTimer?.cancel();
+    _featuredRotationTimer = Timer.periodic(const Duration(seconds: 18), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      final candidates = _featuredCandidates;
+      if (_currentlyPlaying == null && _searchQuery.isEmpty && candidates.length > 1) {
+        setState(() {
+          _featuredIndex = (_featuredIndex + 1) % candidates.length;
+        });
+      }
+    });
+  }
+
+  void _nextFeatured() {
+    final candidates = _featuredCandidates;
+    if (candidates.isEmpty) return;
+    setState(() {
+      _featuredIndex = (_featuredIndex + 1) % candidates.length;
+    });
+    _startFeaturedRotation();
+  }
+
+  void _prevFeatured() {
+    final candidates = _featuredCandidates;
+    if (candidates.isEmpty) return;
+    setState(() {
+      _featuredIndex = (_featuredIndex - 1 + candidates.length) % candidates.length;
+    });
+    _startFeaturedRotation();
+  }
+
+  void _selectFeaturedIndex(int index) {
+    final candidates = _featuredCandidates;
+    if (candidates.isEmpty) return;
+    setState(() {
+      _featuredIndex = index.clamp(0, candidates.length - 1);
+    });
+    _startFeaturedRotation();
   }
 
   void _playMedia(MediaItem item) {
@@ -465,6 +537,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
                             featuredItem: featured,
                             onPlay: () => _playMedia(featured),
                             onMoreInfo: () => _showItemDetails(featured),
+                            currentIndex: _featuredIndex.clamp(0, (_featuredCandidates.length - 1).clamp(0, 999)),
+                            totalCount: _featuredCandidates.length,
+                            onNext: _nextFeatured,
+                            onPrev: _prevFeatured,
+                            onSelectIndex: _selectFeaturedIndex,
                           ),
                         )
                       else if (_localItems.isNotEmpty)
@@ -585,7 +662,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
                   setState(() {
                     _activeCategory = cat;
                     _searchQuery = '';
+                    _featuredIndex = 0;
                   });
+                  _startFeaturedRotation();
                 },
                 onSearchChanged: (query) {
                   setState(() {
