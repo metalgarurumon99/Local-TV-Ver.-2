@@ -360,37 +360,8 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyF): _toggleFullScreen,
-        const SingleActivator(LogicalKeyboardKey.space): _togglePlayPause,
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _seekRelative(const Duration(seconds: 10)),
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _seekRelative(const Duration(seconds: -10)),
-        const SingleActivator(LogicalKeyboardKey.arrowUp): () {
-          final newVol = (_volume + 5.0).clamp(0.0, 100.0);
-          _player.setVolume(newVol);
-          _onUserActivity();
-        },
-        const SingleActivator(LogicalKeyboardKey.arrowDown): () {
-          final newVol = (_volume - 5.0).clamp(0.0, 100.0);
-          _player.setVolume(newVol);
-          _onUserActivity();
-        },
-        const SingleActivator(LogicalKeyboardKey.keyM): () {
-          _player.setVolume(_volume > 0 ? 0.0 : 100.0);
-          _onUserActivity();
-        },
-        const SingleActivator(LogicalKeyboardKey.escape): () async {
-          if (_isFullScreen) {
-            await _exitFullScreen();
-          } else {
-            _saveWatchProgress();
-            widget.onClose();
-          }
-        },
-      },
-      child: Focus(
-        autofocus: true,
+    final playerBody = Focus(
+      autofocus: true,
         child: MouseRegion(
           onHover: (_) => _onUserActivity(),
           child: GestureDetector(
@@ -465,72 +436,65 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
                       ignoring: !_showControls,
                       child: Stack(
                         children: [
-                          // Top Bar with Custom Window Controls when not in fullscreen
+                          // Top Bar Back button & Title
                           Positioned(
                             top: 0,
                             left: 0,
                             right: 0,
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (!_isFullScreen)
-                                  const CustomAppTitleBar(isTransparent: true),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                      colors: [
-                                        Colors.black.withValues(alpha: 0.85),
-                                        Colors.transparent,
-                                      ],
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
-                                        onPressed: () async {
-                                          if (_isFullScreen) {
-                                            await _exitFullScreen();
-                                          }
-                                          _saveWatchProgress();
-                                          widget.onClose();
-                                        },
-                                      ),
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      _currentItem.title,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    if (_currentItem.year != null || _currentItem.genre.isNotEmpty) ...[
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        '${_currentItem.genre} ${_currentItem.year != null ? "• ${_currentItem.year}" : ""}',
-                                        style: const TextStyle(color: Colors.white60, fontSize: 12),
-                                      ),
-                                    ],
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Colors.black.withValues(alpha: 0.85),
+                                    Colors.transparent,
                                   ],
                                 ),
                               ),
-                            ],
+                              child: Row(
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
+                                    onPressed: () async {
+                                      if (_isFullScreen) {
+                                        await _exitFullScreen();
+                                      }
+                                      _saveWatchProgress();
+                                      widget.onClose();
+                                    },
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _currentItem.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        if (_currentItem.year != null || _currentItem.genre.isNotEmpty) ...[
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '${_currentItem.genre} ${_currentItem.year != null ? "• ${_currentItem.year}" : ""}',
+                                            style: const TextStyle(color: Colors.white60, fontSize: 12),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
 
                       // Netflix-Style Audio & Subtitles Popover
                       if (_showAudioSubtitlePopover)
@@ -750,9 +714,50 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
         ),
       ),
     ),
-  ),
-);
-}
+  );
+
+    Widget content = playerBody;
+    if (!_isFullScreen) {
+      content = Column(
+        children: [
+          const RepaintBoundary(child: CustomAppTitleBar(isTransparent: false)),
+          Expanded(child: playerBody),
+        ],
+      );
+    }
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyF): _toggleFullScreen,
+        const SingleActivator(LogicalKeyboardKey.space): _togglePlayPause,
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _seekRelative(const Duration(seconds: 10)),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _seekRelative(const Duration(seconds: -10)),
+        const SingleActivator(LogicalKeyboardKey.arrowUp): () {
+          final newVol = (_volume + 5.0).clamp(0.0, 100.0);
+          _player.setVolume(newVol);
+          _onUserActivity();
+        },
+        const SingleActivator(LogicalKeyboardKey.arrowDown): () {
+          final newVol = (_volume - 5.0).clamp(0.0, 100.0);
+          _player.setVolume(newVol);
+          _onUserActivity();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyM): () {
+          _player.setVolume(_volume > 0 ? 0.0 : 100.0);
+          _onUserActivity();
+        },
+        const SingleActivator(LogicalKeyboardKey.escape): () async {
+          if (_isFullScreen) {
+            await _exitFullScreen();
+          } else {
+            _saveWatchProgress();
+            widget.onClose();
+          }
+        },
+      },
+      child: content,
+    );
+  }
 
   /// Netflix-Style 2-Column Audio & Subtitles Menu
   Widget _buildNetflixAudioSubtitleMenu() {
