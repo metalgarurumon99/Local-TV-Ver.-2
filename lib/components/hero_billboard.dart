@@ -127,22 +127,27 @@ class _HeroBillboardState extends State<HeroBillboard> {
   }
 
   Widget _buildBackgroundImage() {
-    if (widget.featuredItem.isNetworkImage) {
-      return Image.network(
-        widget.featuredItem.customThumbnail!,
-        fit: BoxFit.cover,
-        alignment: Alignment.topCenter,
-        errorBuilder: (_, _, _) => _buildFallbackImage(),
-      );
-    }
-    if (widget.featuredItem.customThumbnail != null &&
-        File(widget.featuredItem.customThumbnail!).existsSync()) {
-      return Image.file(
-        File(widget.featuredItem.customThumbnail!),
-        fit: BoxFit.cover,
-        alignment: Alignment.topCenter,
-        errorBuilder: (_, _, _) => _buildFallbackImage(),
-      );
+    final custom = widget.featuredItem.customThumbnail;
+    if (custom != null && custom.isNotEmpty) {
+      if (custom.startsWith('http://') || custom.startsWith('https://')) {
+        return Image.network(
+          custom,
+          fit: BoxFit.cover,
+          alignment: Alignment.topCenter,
+          cacheWidth: 800,
+          errorBuilder: (_, _, _) => _buildFallbackImage(),
+        );
+      }
+      final localFile = File(custom);
+      if (localFile.existsSync()) {
+        return Image.file(
+          localFile,
+          fit: BoxFit.cover,
+          alignment: Alignment.topCenter,
+          cacheWidth: 800,
+          errorBuilder: (_, _, _) => _buildFallbackImage(),
+        );
+      }
     }
     return _buildFallbackImage();
   }

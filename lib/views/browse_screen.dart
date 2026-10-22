@@ -51,25 +51,25 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
 
     if (folders.isNotEmpty) {
-      final shouldShowBlockingScan = (cached.isEmpty && _localItems.isEmpty) || forceFullRescan;
-      if (shouldShowBlockingScan && mounted) {
+      if (mounted) {
         setState(() {
           _isScanningFolders = true;
-          _scanStatus = 'Memindai folder film & serial Anda...';
+          _scanStatus = 'Memeriksa folder & video...';
         });
       }
 
-      // Background non-blocking sync
-      _runBackgroundScan(shouldShowBlockingScan: shouldShowBlockingScan);
+      // Background non-blocking sync: user can explore immediately
+      _runBackgroundScan();
     }
   }
 
-  Future<void> _runBackgroundScan({required bool shouldShowBlockingScan}) async {
+  Future<void> _runBackgroundScan() async {
     try {
       final items = await LocalLibraryService.scanAllFolders(
         fetchOnlineMetadata: true,
+        extractThumbnails: true,
         onProgress: (msg) {
-          if (mounted && shouldShowBlockingScan) {
+          if (mounted) {
             setState(() => _scanStatus = msg);
           }
         },
@@ -84,7 +84,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       }
     } catch (e) {
       debugPrint('Background sync error: $e');
-      if (mounted && shouldShowBlockingScan) {
+      if (mounted) {
         setState(() {
           _isScanningFolders = false;
           _scanStatus = null;
@@ -413,29 +413,6 @@ class _BrowseScreenState extends State<BrowseScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Scanning status banner
-                if (_isScanningFolders && _scanStatus != null)
-                  Container(
-                    width: double.infinity,
-                    color: const Color(0xFFE50914),
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                    margin: const EdgeInsets.only(top: 70),
-                    child: Row(
-                      children: [
-                        const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          _scanStatus!,
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                  ),
-
                 // Hero Banner (Featured item from user's local collection)
                 if (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
                   HeroBillboard(
@@ -541,6 +518,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             child: NetflixNavbar(
               activeCategory: _activeCategory,
               folderCount: _connectedFolders.length,
+              isScanning: _isScanningFolders,
               onCategoryChanged: (cat) {
                 setState(() {
                   _activeCategory = cat;
@@ -557,6 +535,53 @@ class _BrowseScreenState extends State<BrowseScreen> {
               onSyncLibrary: () => _loadInitialLibrary(forceFullRescan: true),
             ),
           ),
+
+          // Non-blocking floating scan progress toast at bottom right
+          if (_isScanningFolders && _scanStatus != null)
+            Positioned(
+              bottom: 24,
+              right: 28,
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E).withValues(alpha: 0.95),
+                    borderRadius: BorderRadius.circular(30),
+                    border: Border.all(color: const Color(0xFFE50914), width: 1.2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.8),
+                        blurRadius: 18,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFFE50914),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _scanStatus!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

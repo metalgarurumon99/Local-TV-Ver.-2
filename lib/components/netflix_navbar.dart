@@ -8,6 +8,7 @@ class NetflixNavbar extends StatefulWidget {
   final VoidCallback onManageFolders;
   final VoidCallback? onSyncLibrary;
   final int folderCount;
+  final bool isScanning;
 
   const NetflixNavbar({
     super.key,
@@ -18,6 +19,7 @@ class NetflixNavbar extends StatefulWidget {
     required this.onManageFolders,
     this.onSyncLibrary,
     this.folderCount = 0,
+    this.isScanning = false,
   });
 
   @override
@@ -153,11 +155,43 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
             ),
           // Sync / Verify Online Info Button
           if (widget.onSyncLibrary != null)
-            IconButton(
-              icon: const Icon(Icons.sync_rounded, color: Colors.white70, size: 20),
-              tooltip: 'Sinkronisasi & Verifikasi Info Online',
-              onPressed: widget.onSyncLibrary,
-            ),
+            widget.isScanning
+                ? Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    margin: const EdgeInsets.only(left: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE50914).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFE50914), width: 0.8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Color(0xFFE50914),
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Memindai...',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : IconButton(
+                    icon: const Icon(Icons.sync_rounded, color: Colors.white70, size: 20),
+                    tooltip: 'Sinkronisasi Ulang & Perbarui Info / Thumbnail',
+                    onPressed: widget.onSyncLibrary,
+                  ),
 
           const Spacer(),
 

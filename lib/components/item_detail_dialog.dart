@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../models/media_item.dart';
+import '../services/thumbnail_service.dart';
 
 class ItemDetailDialog extends StatefulWidget {
   final MediaItem item;
@@ -447,7 +448,11 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                             final sizeMb = ep.fileSize != null
                                 ? '${(ep.fileSize! / (1024 * 1024)).toStringAsFixed(1)} MB'
                                 : '';
-                            final hasThumb = ep.thumbnail != null && ep.thumbnail!.isNotEmpty;
+                            final localThumb = LocalThumbnailService.hasThumbnail(ep.videoPath)
+                                ? LocalThumbnailService.getThumbnailPath(ep.videoPath)
+                                : ep.thumbnail;
+                            final hasThumb = localThumb != null && localThumb.isNotEmpty;
+                            final isLocalFile = hasThumb && File(localThumb).existsSync();
 
                             return ListTile(
                               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -460,12 +465,31 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                                   child: Stack(
                                     alignment: Alignment.center,
                                     children: [
-                                      if (hasThumb)
-                                        Image.network(
-                                          ep.thumbnail!,
+                                      if (isLocalFile)
+                                        Image.file(
+                                          File(localThumb),
                                           width: 80,
                                           height: 48,
                                           fit: BoxFit.cover,
+                                          cacheWidth: 200,
+                                          errorBuilder: (_, _, _) => Center(
+                                            child: Text(
+                                              '${index + 1}',
+                                              style: const TextStyle(
+                                                color: Colors.white70,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ),
+                                        )
+                                      else if (hasThumb && (localThumb.startsWith('http://') || localThumb.startsWith('https://')))
+                                        Image.network(
+                                          localThumb,
+                                          width: 80,
+                                          height: 48,
+                                          fit: BoxFit.cover,
+                                          cacheWidth: 200,
                                           errorBuilder: (_, _, _) => Center(
                                             child: Text(
                                               '${index + 1}',
@@ -508,30 +532,16 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                                 ),
                               ),
                               title: Text(
-                                ep.title,
+                                widget.item.title,
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Season ${ep.season}${sizeMb.isNotEmpty ? ' • $sizeMb' : ''}',
-                                    style: const TextStyle(color: Colors.white38, fontSize: 11),
-                                  ),
-                                  if (ep.synopsis != null && ep.synopsis!.isNotEmpty) ...[
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      ep.synopsis!,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(color: Colors.white60, fontSize: 11, height: 1.3),
-                                    ),
-                                  ],
-                                ],
+                              subtitle: Text(
+                                'Episode "${ep.episodeNumber.toString().padLeft(2, '0')}"${sizeMb.isNotEmpty ? ' • $sizeMb' : ''}',
+                                style: const TextStyle(color: Colors.white70, fontSize: 12),
                               ),
                               trailing: IconButton(
                                 icon: const Icon(Icons.play_circle_fill_rounded, color: Color(0xFFE50914), size: 30),

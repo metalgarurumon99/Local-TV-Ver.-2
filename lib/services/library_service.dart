@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import '../models/media_item.dart';
 import 'metadata_service.dart';
+import 'thumbnail_service.dart';
 
 class LocalLibraryService {
   static const Set<String> supportedVideoExtensions = {
@@ -143,6 +144,7 @@ class LocalLibraryService {
   /// Scan all connected folders and group videos PER TITLE / SHOW
   static Future<List<MediaItem>> scanAllFolders({
     bool fetchOnlineMetadata = true,
+    bool extractThumbnails = true,
     void Function(String message)? onProgress,
   }) async {
     final folders = await getConnectedFolders();
@@ -310,10 +312,16 @@ class LocalLibraryService {
               }).toList();
             }
 
+            // Cache poster locally so it loads in 1ms without internet
+            String? localPoster = online.posterUrl;
+            if (online.posterUrl != null) {
+              localPoster = await LocalThumbnailService.cachePoster(online.posterUrl);
+            }
+
             item = item.copyWith(
               title: online.title,
               description: online.blurb,
-              customThumbnail: online.posterUrl,
+              customThumbnail: localPoster ?? online.posterUrl,
               year: online.year ?? item.year,
               rating: online.rating ?? item.rating,
               genre: online.genre ?? item.genre,
@@ -326,7 +334,31 @@ class LocalLibraryService {
         } catch (e) {
           debugPrint('Online metadata fetch failed for ${item.title}: $e');
         }
+      } else if (item.customThumbnail != null &&
+          (item.customThumbnail!.startsWith('http://') || item.customThumbnail!.startsWith('https://'))) {
+        // Cache previously un-cached network poster to disk
+        final cached = await LocalThumbnailService.cachePoster(item.customThumbnail);
+        if (cached != null && cached != item.customThumbnail) {
+          item = item.copyWith(customThumbnail: cached);
+          customMetadataMap[groupKey] = item.toJson();
+        }
       }
+
+      // 5. Attach or extract local episode thumbnails
+      final List<Episode> withThumbnails = [];
+      for (final ep in item.episodes) {
+        var thumbPath = ep.thumbnail;
+        if (thumbPath == null || thumbPath.isEmpty || !File(thumbPath).existsSync()) {
+          if (LocalThumbnailService.hasThumbnail(ep.videoPath)) {
+            thumbPath = LocalThumbnailService.getThumbnailPath(ep.videoPath);
+          } else if (extractThumbnails) {
+            onProgress?.call('Membuat thumbnail: ${item.title} E${ep.episodeNumber}');
+            thumbPath = await LocalThumbnailService.extractThumbnail(ep.videoPath);
+          }
+        }
+        withThumbnails.add(ep.copyWith(thumbnail: thumbPath));
+      }
+      item = item.copyWith(episodes: withThumbnails);
 
       resultItems.add(item);
     }

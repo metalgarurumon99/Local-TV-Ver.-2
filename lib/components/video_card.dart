@@ -149,26 +149,35 @@ class _VideoCardState extends State<VideoCard> {
   }
 
   Widget _buildThumbnail() {
-    if (widget.item.isNetworkImage) {
-      return Image.network(
-        widget.item.customThumbnail!,
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => _buildFallbackCard(),
-      );
-    }
-
-    if (widget.item.customThumbnail != null &&
-        File(widget.item.customThumbnail!).existsSync()) {
-      return Image.file(
-        File(widget.item.customThumbnail!),
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => _buildFallbackCard(),
-      );
+    final custom = widget.item.customThumbnail;
+    if (custom != null && custom.isNotEmpty) {
+      if (custom.startsWith('http://') || custom.startsWith('https://')) {
+        return Image.network(
+          custom,
+          fit: BoxFit.cover,
+          cacheWidth: 320,
+          errorBuilder: (_, _, _) => _buildFallbackCard(),
+          loadingBuilder: (ctx, child, progress) {
+            if (progress == null) return child;
+            return _buildFallbackCard();
+          },
+        );
+      }
+      final localFile = File(custom);
+      if (localFile.existsSync()) {
+        return Image.file(
+          localFile,
+          fit: BoxFit.cover,
+          cacheWidth: 320,
+          errorBuilder: (_, _, _) => _buildFallbackCard(),
+        );
+      }
     }
 
     return Image.asset(
       widget.item.thumbnailPath,
       fit: BoxFit.cover,
+      cacheWidth: 320,
       errorBuilder: (_, _, _) => _buildFallbackCard(),
     );
   }

@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 import '../models/media_item.dart';
+import '../services/thumbnail_service.dart';
 
 class InAppPlayer extends StatefulWidget {
   final MediaItem item;
@@ -98,14 +99,27 @@ class _InAppPlayerState extends State<InAppPlayer> {
       final isFull = await windowManager.isFullScreen();
       if (isFull) {
         await windowManager.setFullScreen(false);
+        await windowManager.setTitleBarStyle(TitleBarStyle.normal);
         if (mounted) setState(() => _isFullScreen = false);
       } else {
+        await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
         await windowManager.setFullScreen(true);
         if (mounted) setState(() => _isFullScreen = true);
       }
     } catch (e) {
       debugPrint('Fullscreen toggle error: $e');
     }
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    _player.dispose();
+    if (_isFullScreen) {
+      windowManager.setFullScreen(false);
+      windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    }
+    super.dispose();
   }
 
   void _togglePlayPause() {
@@ -184,7 +198,7 @@ class _InAppPlayerState extends State<InAppPlayer> {
       // Keep controls visible while menu/drawer is open
       return;
     }
-    _hideTimer = Timer(const Duration(seconds: 4), () {
+    _hideTimer = Timer(const Duration(seconds: 3), () {
       if (mounted && _isPlaying && !_showAudioSubtitlePopover && !_showEpisodesDrawer) {
         setState(() => _showControls = false);
       }
@@ -196,16 +210,6 @@ class _InAppPlayerState extends State<InAppPlayer> {
       setState(() => _showControls = true);
     }
     _startHideTimer();
-  }
-
-  @override
-  void dispose() {
-    _hideTimer?.cancel();
-    if (_isFullScreen) {
-      windowManager.setFullScreen(false);
-    }
-    _player.dispose();
-    super.dispose();
   }
 
   String _formatDuration(Duration duration) {
@@ -228,31 +232,43 @@ class _InAppPlayerState extends State<InAppPlayer> {
   }
 
   Widget _buildPosterThumbnail(MediaItem item) {
-    if (item.isNetworkImage) {
-      return Image.network(
-        item.customThumbnail!,
-        width: double.infinity,
-        height: double.infinity,
-        fit: BoxFit.cover,
-        errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
-      );
-    }
-    if (item.customThumbnail != null && File(item.customThumbnail!).existsSync()) {
+    // 1. Check local extracted video thumbnail first!
+    if (LocalThumbnailService.hasThumbnail(item.videoPath)) {
+      final path = LocalThumbnailService.getThumbnailPath(item.videoPath);
       return Image.file(
-        File(item.customThumbnail!),
+        File(path),
         width: double.infinity,
         height: double.infinity,
         fit: BoxFit.cover,
+        cacheWidth: 320,
         errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
       );
     }
-    return Image.asset(
-      item.thumbnailPath,
-      width: double.infinity,
-      height: double.infinity,
-      fit: BoxFit.cover,
-      errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
-    );
+
+    if (item.customThumbnail != null && item.customThumbnail!.isNotEmpty) {
+      if (item.isNetworkImage) {
+        return Image.network(
+          item.customThumbnail!,
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          cacheWidth: 320,
+          errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
+        );
+      }
+      final file = File(item.customThumbnail!);
+      if (file.existsSync()) {
+        return Image.file(
+          file,
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          cacheWidth: 320,
+          errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
+        );
+      }
+    }
+    return _buildThumbnailPlaceholder();
   }
 
   Widget _buildThumbnailPlaceholder() {
@@ -963,13 +979,15 @@ class _InAppPlayerState extends State<InAppPlayer> {
                         ),
                         const SizedBox(width: 12),
 
-                        // Right Column: Title & Synopsis
+                        // Right Column: Baris 1 (Nama Movie/series) & Baris 2 (Episode "xx")
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
+                              // Baris Pertama: Nama Movie/series
                               Text(
-                                item.title,
+                                _getSeriesTitle(item),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -978,17 +996,14 @@ class _InAppPlayerState extends State<InAppPlayer> {
                                   fontSize: 13,
                                 ),
                               ),
-                              const SizedBox(height: 4),
+                              const SizedBox(height: 5),
+                              // Baris kedua: Episode "xx"
                               Text(
-                                item.description.isNotEmpty
-                                    ? item.description
-                                    : 'Sinopsis episode belum tersedia.',
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
+                                'Episode "${(index + 1).toString().padLeft(2, '0')}"',
                                 style: const TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 11,
-                                  height: 1.35,
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
                                 ),
                               ),
                             ],
@@ -1004,5 +1019,12 @@ class _InAppPlayerState extends State<InAppPlayer> {
         ],
       ),
     );
+  }
+
+  String _getSeriesTitle(MediaItem item) {
+    final title = _currentItem.title;
+    final dash = title.indexOf(' - ');
+    if (dash != -1) return title.substring(0, dash).trim();
+    return title;
   }
 }
