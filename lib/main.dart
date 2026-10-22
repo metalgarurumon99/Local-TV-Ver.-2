@@ -24,9 +24,6 @@ void main() async {
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     await windowManager.show();
     await windowManager.focus();
-    // Brief delay to allow the Flutter DirectX swapchain to paint the dark frame before Win32 maximize
-    await Future.delayed(const Duration(milliseconds: 60));
-    await windowManager.maximize();
   });
 
   runApp(const LocalTvApp());
