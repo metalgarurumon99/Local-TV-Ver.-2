@@ -14,6 +14,7 @@ class InAppPlayer extends StatefulWidget {
   final MediaItem item;
   final VoidCallback onClose;
   final List<MediaItem> playlist;
+  final List<MediaItem> allLibraryItems;
   final ValueChanged<MediaItem>? onMediaChanged;
 
   const InAppPlayer({
@@ -21,6 +22,7 @@ class InAppPlayer extends StatefulWidget {
     required this.item,
     required this.onClose,
     this.playlist = const [],
+    this.allLibraryItems = const [],
     this.onMediaChanged,
   });
 
@@ -32,6 +34,7 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
   late final Player _player;
   late final VideoController _controller;
   late MediaItem _currentItem;
+  late List<MediaItem> _currentPlaylist;
 
   bool _showControls = true;
   Timer? _hideTimer;
@@ -59,6 +62,7 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
     super.initState();
     windowManager.addListener(this);
     _currentItem = widget.item;
+    _currentPlaylist = List<MediaItem>.from(widget.playlist);
 
     // Enable native libass rendering so subtitle styling is identical to original MPV
     _player = Player(
@@ -104,9 +108,8 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
       if (mounted) setState(() => _currentTrack = track);
     });
 
-    windowManager.isFullScreen().then((val) {
-      if (mounted) setState(() => _isFullScreen = val);
-    });
+    // Auto enter Fullscreen when video playback starts
+    _enterFullScreen();
 
     // Periodic watch history saving every 4 seconds
     _historyTimer = Timer.periodic(const Duration(seconds: 4), (_) => _saveWatchProgress());
@@ -263,10 +266,49 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
   }
 
   void _playNextInPlaylist() {
-    if (widget.playlist.isEmpty) return;
-    final currentIndex = widget.playlist.indexWhere((it) => it.videoPath == _currentItem.videoPath);
-    if (currentIndex != -1 && currentIndex + 1 < widget.playlist.length) {
-      _switchMedia(widget.playlist[currentIndex + 1]);
+    if (_currentPlaylist.isEmpty) return;
+    final currentIndex = _currentPlaylist.indexWhere((it) => it.videoPath == _currentItem.videoPath);
+    if (currentIndex != -1 && currentIndex + 1 < _currentPlaylist.length) {
+      _switchMedia(_currentPlaylist[currentIndex + 1]);
+    }
+  }
+
+  void _playRecommendation(MediaItem recItem) {
+    if (recItem.isSeries && recItem.episodes.isNotEmpty) {
+      final epPlaylist = recItem.episodes.map((ep) {
+        final epDesc = (ep.synopsis != null && ep.synopsis!.isNotEmpty)
+            ? ep.synopsis!
+            : recItem.description;
+        final epThumb = ep.thumbnail ?? recItem.customThumbnail;
+
+        return MediaItem(
+          id: ep.id,
+          title: ep.title.isNotEmpty ? ep.title : '${recItem.title} - Episode ${ep.episodeNumber}',
+          description: epDesc,
+          genre: recItem.genre,
+          maturity: recItem.maturity,
+          slug: recItem.slug,
+          category: recItem.category,
+          videoPath: ep.videoPath,
+          customThumbnail: epThumb,
+          year: recItem.year,
+          rating: recItem.rating,
+          isSeries: true,
+          episodes: recItem.episodes,
+        );
+      }).toList();
+
+      final firstEp = epPlaylist.first;
+      setState(() {
+        _currentPlaylist = epPlaylist;
+      });
+      _switchMedia(firstEp);
+    } else {
+      final movies = widget.allLibraryItems.where((it) => !it.isSeries).toList();
+      setState(() {
+        _currentPlaylist = movies.isNotEmpty ? movies : [recItem];
+      });
+      _switchMedia(recItem);
     }
   }
 
@@ -642,8 +684,8 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
                                   ),
                                   const SizedBox(width: 14),
 
-                                  // Netflix-Style: Episodes Button
-                                  if (widget.playlist.isNotEmpty)
+                                  // Netflix-Style: Episodes Button (fullscreen mode)
+                                  if (_isFullScreen && _currentPlaylist.isNotEmpty)
                                     IconButton(
                                       icon: Icon(
                                         Icons.video_library_rounded,
@@ -702,8 +744,8 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
                 ),
               ),
 
-              // Netflix-Style Episodes Card / Pop-up (Max Half Screen Height)
-              if (_showEpisodesDrawer && widget.playlist.isNotEmpty)
+              // Netflix-Style Episodes Card / Pop-up (Max Half Screen Height in fullscreen mode)
+              if (_isFullScreen && _showEpisodesDrawer && _currentPlaylist.isNotEmpty)
                 Positioned(
                   bottom: 85,
                   right: 24,
@@ -716,15 +758,7 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
     ),
   );
 
-    Widget content = playerBody;
-    if (!_isFullScreen) {
-      content = Column(
-        children: [
-          const RepaintBoundary(child: CustomAppTitleBar(isTransparent: false)),
-          Expanded(child: playerBody),
-        ],
-      );
-    }
+    final Widget content = _isFullScreen ? playerBody : _buildYoutubeStyleWindowed(playerBody);
 
     return CallbackShortcuts(
       bindings: {
@@ -756,6 +790,502 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
         },
       },
       child: content,
+    );
+  }
+
+  /// YouTube-Style Non-Fullscreen Layout:
+  /// Left: 16:9 Player + Title + Meta + Synopsis + "Rekomendasi Lainnya"
+  /// Right: YouTube-style playlist sidebar (Daftar Episode / Playlist)
+  Widget _buildYoutubeStyleWindowed(Widget playerBody) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF111111),
+      body: Column(
+        children: [
+          const RepaintBoundary(child: CustomAppTitleBar(isTransparent: false)),
+          // Subheader: Navigation & Fullscreen Tip
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            decoration: const BoxDecoration(
+              color: Color(0xFF161616),
+              border: Border(bottom: BorderSide(color: Color(0xFF222222), width: 0.8)),
+            ),
+            child: Row(
+              children: [
+                InkWell(
+                  onTap: () {
+                    _saveWatchProgress();
+                    widget.onClose();
+                  },
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.arrow_back_rounded, size: 16, color: Colors.white),
+                        SizedBox(width: 8),
+                        Text(
+                          'Kembali ke Katalog',
+                          style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    _currentItem.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+                // Fullscreen button / tip
+                InkWell(
+                  onTap: _enterFullScreen,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE50914).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFE50914).withValues(alpha: 0.4)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.fullscreen_rounded, size: 16, color: Color(0xFFE50914)),
+                        SizedBox(width: 6),
+                        Text(
+                          'Layar Penuh (F)',
+                          style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Main YouTube Split View
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Left Area: 16:9 Video Box + Metadata + Recommendations
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(24, 16, 20, 40),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 16:9 Video Box
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: AspectRatio(
+                            aspectRatio: 16 / 9,
+                            child: playerBody,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Title
+                        Text(
+                          _currentItem.title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: -0.4,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Chips: Category, Genre, Rating, Year
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: [
+                            _buildChip(
+                              _currentItem.isSeries ? 'Serial TV & Anime' : 'Film Layar Lebar',
+                              isAccent: true,
+                            ),
+                            if (_currentItem.year != null && _currentItem.year!.isNotEmpty)
+                              _buildChip(_currentItem.year!),
+                            if (_currentItem.rating != null && _currentItem.rating!.isNotEmpty)
+                              _buildChip('★ ${_currentItem.rating!}'),
+                            if (_currentItem.maturity.isNotEmpty)
+                              _buildChip('${_currentItem.maturity}+'),
+                            if (_currentItem.genre.isNotEmpty)
+                              _buildChip(_currentItem.genre),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Description Box (YouTube style)
+                        if (_currentItem.description.isNotEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1B1B1B),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.white10),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Sinopsis',
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _currentItem.description,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.88),
+                                    fontSize: 14,
+                                    height: 1.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 32),
+
+                        // Recommendations Section
+                        _buildRecommendationsSection(),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Right Sidebar: YouTube Playlist
+                Container(
+                  width: 390,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF141414),
+                    border: Border(left: BorderSide(color: Color(0xFF222222), width: 1)),
+                  ),
+                  child: _buildRightPlaylistSidebar(),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRightPlaylistSidebar() {
+    final playlist = _currentPlaylist;
+    final isSeries = _currentItem.isSeries || playlist.any((it) => it.isSeries);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Sidebar Header
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: const BoxDecoration(
+            color: Color(0xFF181818),
+            border: Border(bottom: BorderSide(color: Color(0xFF262626))),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    isSeries ? Icons.view_list_rounded : Icons.playlist_play_rounded,
+                    color: const Color(0xFFE50914),
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    isSeries ? 'Daftar Episode' : 'Daftar Putar',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.white12,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${playlist.length} Video',
+                      style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _currentItem.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white38, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+
+        // Episode / Video List
+        Expanded(
+          child: playlist.isEmpty
+              ? const Center(
+                  child: Text('Tidak ada video lain dalam daftar putar.', style: TextStyle(color: Colors.white38, fontSize: 13)),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: playlist.length,
+                  itemBuilder: (context, index) {
+                    final item = playlist[index];
+                    final isSelected = item.videoPath == _currentItem.videoPath;
+
+                    return InkWell(
+                      onTap: () {
+                        if (!isSelected) {
+                          _switchMedia(item);
+                        }
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: isSelected ? const Color(0xFF242424) : Colors.transparent,
+                          borderRadius: BorderRadius.circular(6),
+                          border: isSelected ? Border.all(color: const Color(0xFFE50914), width: 1.2) : null,
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Thumbnail Preview
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: SizedBox(
+                                width: 115,
+                                height: 65,
+                                child: Stack(
+                                  children: [
+                                    _buildPosterThumbnail(item),
+                                    if (isSelected)
+                                      Container(
+                                        color: Colors.black.withValues(alpha: 0.5),
+                                        child: const Center(
+                                          child: Icon(Icons.play_arrow_rounded, color: Color(0xFFE50914), size: 28),
+                                        ),
+                                      ),
+                                    Positioned(
+                                      bottom: 4,
+                                      right: 4,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withValues(alpha: 0.8),
+                                          borderRadius: BorderRadius.circular(2),
+                                        ),
+                                        child: Text(
+                                          '#${index + 1}',
+                                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            // Info Column
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    item.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: isSelected ? const Color(0xFFE50914) : Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                                    ),
+                                  ),
+                                  if (item.description.isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      item.description,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.3),
+                                    ),
+                                  ],
+                                  if (isSelected) ...[
+                                    const SizedBox(height: 4),
+                                    const Text(
+                                      'Sedang Diputar',
+                                      style: TextStyle(color: Color(0xFFE50914), fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRecommendationsSection() {
+    final recommendations = widget.allLibraryItems.where((it) {
+      if (it.id == _currentItem.id || it.videoPath == _currentItem.videoPath) return false;
+      if (_currentItem.isSeries && it.title == _currentItem.title) return false;
+      return true;
+    }).toList();
+
+    if (recommendations.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.recommend_rounded, color: Color(0xFFE50914), size: 22),
+            SizedBox(width: 8),
+            Text(
+              'Rekomendasi Lainnya',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 4,
+            childAspectRatio: 16 / 12,
+            crossAxisSpacing: 14,
+            mainAxisSpacing: 14,
+          ),
+          itemCount: recommendations.length.clamp(0, 8),
+          itemBuilder: (context, index) {
+            final recItem = recommendations[index];
+            return InkWell(
+              onTap: () => _playRecommendation(recItem),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E1E),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _buildPosterThumbnail(recItem),
+                            Positioned(
+                              top: 6,
+                              left: 6,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: recItem.isSeries ? const Color(0xFF0071EB) : const Color(0xFFE50914),
+                                  borderRadius: BorderRadius.circular(3),
+                                ),
+                                child: Text(
+                                  recItem.isSeries ? 'SERIAL' : 'FILM',
+                                  style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            recItem.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            recItem.genre.isNotEmpty ? recItem.genre : 'Lokal',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white38, fontSize: 10),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildChip(String text, {bool isAccent = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: isAccent ? const Color(0xFFE50914).withValues(alpha: 0.2) : Colors.white10,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: isAccent ? const Color(0xFFE50914).withValues(alpha: 0.5) : Colors.white12,
+        ),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: isAccent ? const Color(0xFFE50914) : Colors.white70,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
     );
   }
 
@@ -1003,7 +1533,7 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Episodes (${widget.playlist.length})',
+                    'Episodes (${_currentPlaylist.length})',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 14,
@@ -1029,10 +1559,10 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
             child: ListView.separated(
               padding: const EdgeInsets.symmetric(vertical: 6),
               shrinkWrap: true,
-              itemCount: widget.playlist.length,
+              itemCount: _currentPlaylist.length,
               separatorBuilder: (context, index) => const Divider(color: Colors.white10, height: 1),
               itemBuilder: (ctx, index) {
-                final item = widget.playlist[index];
+                final item = _currentPlaylist[index];
                 final isCurrent = item.videoPath == _currentItem.videoPath;
                 final badgeText = isCurrent ? 'S1E${index + 1} • NOW PLAYING' : 'S1E${index + 1}';
 

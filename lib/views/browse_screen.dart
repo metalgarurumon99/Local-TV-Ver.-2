@@ -498,6 +498,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       return InAppPlayer(
         item: _currentlyPlaying!,
         playlist: _currentPlayingPlaylist.isNotEmpty ? _currentPlayingPlaylist : [_currentlyPlaying!],
+        allLibraryItems: _localItems,
         onMediaChanged: (newItem) {
           setState(() {
             _currentlyPlaying = newItem;

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -139,25 +140,68 @@ class _HeroBillboardState extends State<HeroBillboard> {
   Widget _buildBackgroundImage() {
     final custom = widget.featuredItem.customThumbnail;
     if (custom != null && custom.isNotEmpty) {
-      if (custom.startsWith('http://') || custom.startsWith('https://')) {
-        return Image.network(
-          custom,
-          fit: BoxFit.cover,
-          alignment: Alignment.topCenter,
-          cacheWidth: 800,
-          errorBuilder: (_, _, _) => _buildFallbackImage(),
-        );
+      Widget imageWidget(BoxFit fit, Alignment alignment, {double? width, double? height}) {
+        if (custom.startsWith('http://') || custom.startsWith('https://')) {
+          return Image.network(
+            custom,
+            fit: fit,
+            alignment: alignment,
+            width: width,
+            height: height,
+            cacheWidth: 1080,
+            errorBuilder: (_, _, _) => _buildFallbackImage(),
+          );
+        }
+        final localFile = File(custom);
+        if (localFile.existsSync()) {
+          return Image.file(
+            localFile,
+            fit: fit,
+            alignment: alignment,
+            width: width,
+            height: height,
+            cacheWidth: 1080,
+            errorBuilder: (_, _, _) => _buildFallbackImage(),
+          );
+        }
+        return _buildFallbackImage();
       }
-      final localFile = File(custom);
-      if (localFile.existsSync()) {
-        return Image.file(
-          localFile,
-          fit: BoxFit.cover,
-          alignment: Alignment.topCenter,
-          cacheWidth: 800,
-          errorBuilder: (_, _, _) => _buildFallbackImage(),
-        );
-      }
+
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          // 1. Ambient Blurred Layer to fill the wide billboard seamlessly
+          Positioned.fill(
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 32, sigmaY: 32),
+              child: Opacity(
+                opacity: 0.35,
+                child: imageWidget(BoxFit.cover, Alignment.center),
+              ),
+            ),
+          ),
+
+          // 2. Full Uncropped Poster in proper aspect ratio (Tampil Full tanpa ter-crop)
+          Positioned(
+            top: 0,
+            bottom: 0,
+            right: 0,
+            width: 720,
+            child: ShaderMask(
+              shaderCallback: (rect) {
+                return const LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [Colors.transparent, Colors.black, Colors.black],
+                  stops: [0.0, 0.28, 1.0],
+                ).createShader(rect);
+              },
+              blendMode: BlendMode.dstIn,
+              child: imageWidget(BoxFit.contain, Alignment.centerRight),
+            ),
+          ),
+        ],
+      );
     }
     return _buildFallbackImage();
   }
@@ -376,15 +420,14 @@ class _HeroBillboardState extends State<HeroBillboard> {
             ),
           ),
 
-          // 5. Netflix-Style Audio Toggle Button & Dynamic Carousel Navigation (Bottom Right)
-          Positioned(
-            right: 50,
-            bottom: 45,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Dynamic Carousel Navigation (if more than 1 item)
-                if (widget.totalCount > 1) ...[
+          // 5. Dynamic Carousel Navigation (STATIONARY at right: 105, NEVER shifts)
+          if (widget.totalCount > 1)
+            Positioned(
+              right: 105,
+              bottom: 45,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   if (widget.onPrev != null)
                     InkWell(
                       onTap: () {
@@ -458,29 +501,37 @@ class _HeroBillboardState extends State<HeroBillboard> {
                         child: const Icon(Icons.arrow_forward_ios_rounded, size: 13, color: Colors.white),
                       ),
                     ),
-                  const SizedBox(width: 14),
                 ],
+              ),
+            ),
 
-                // Audio Mute Toggle Button
-                if (_videoController != null && _isVideoReady)
-                  InkWell(
-                    onTap: _toggleMute,
-                    borderRadius: BorderRadius.circular(20),
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.6),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white38, width: 1),
-                      ),
-                      child: Icon(
-                        _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                        color: Colors.white,
-                        size: 20,
-                      ),
+          // 6. Netflix-Style Audio Toggle Button (STATIONARY at right: 50, smoothly fades in/out)
+          Positioned(
+            right: 50,
+            bottom: 45,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 250),
+              opacity: (_videoController != null && _isVideoReady) ? 1.0 : 0.0,
+              child: IgnorePointer(
+                ignoring: !(_videoController != null && _isVideoReady),
+                child: InkWell(
+                  onTap: _toggleMute,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white38, width: 1),
+                    ),
+                    child: Icon(
+                      _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                      color: Colors.white,
+                      size: 20,
                     ),
                   ),
-              ],
+                ),
+              ),
             ),
           ),
         ],
