@@ -1,12 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:window_manager/window_manager.dart';
 import 'views/browse_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize MediaKit (LibMPV engine for desktop)
   MediaKit.ensureInitialized();
+
+  // Initialize WindowManager for desktop fullscreen & window controls
+  await windowManager.ensureInitialized();
+
+  const windowOptions = WindowOptions(
+    minimumSize: Size(960, 580),
+    center: true,
+    title: 'Local TV Ver. 2',
+    backgroundColor: Color(0xFF111111),
+  );
+
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
 
   runApp(const LocalTvApp());
 }

@@ -73,12 +73,12 @@ class _VideoCardState extends State<VideoCard> {
 
       await player.setVolume(0); // Muted preview
       await player.open(Media(path), play: true);
-      await player.seek(const Duration(seconds: 35)); // Skip opening black frames
+      await player.seek(const Duration(seconds: 40)); // Seragam ke detik 40 menghindari logo hitam
 
-      // Loop a 15-second snippet
+      // Loop snippet selama 25 detik
       _posSub = player.stream.position.listen((pos) {
-        if (pos.inSeconds > 50) {
-          player.seek(const Duration(seconds: 35));
+        if (pos.inSeconds > 65) {
+          player.seek(const Duration(seconds: 40));
         }
       });
 

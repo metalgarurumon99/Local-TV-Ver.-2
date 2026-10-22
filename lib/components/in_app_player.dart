@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:window_manager/window_manager.dart';
 import '../models/media_item.dart';
 
 class InAppPlayer extends StatefulWidget {
@@ -35,6 +37,7 @@ class _InAppPlayerState extends State<InAppPlayer> {
   Duration _duration = Duration.zero;
   bool _isPlaying = true;
   double _volume = 100.0;
+  bool _isFullScreen = false;
 
   // Track & Subtitle selection state
   Tracks _tracks = const Tracks();
@@ -81,9 +84,49 @@ class _InAppPlayerState extends State<InAppPlayer> {
       if (mounted) setState(() => _currentTrack = track);
     });
 
+    windowManager.isFullScreen().then((val) {
+      if (mounted) setState(() => _isFullScreen = val);
+    });
+
     // Start playback
     _startPlayback(_currentItem.videoPath);
     _startHideTimer();
+  }
+
+  Future<void> _toggleFullScreen() async {
+    try {
+      final isFull = await windowManager.isFullScreen();
+      if (isFull) {
+        await windowManager.setFullScreen(false);
+        if (mounted) setState(() => _isFullScreen = false);
+      } else {
+        await windowManager.setFullScreen(true);
+        if (mounted) setState(() => _isFullScreen = true);
+      }
+    } catch (e) {
+      debugPrint('Fullscreen toggle error: $e');
+    }
+  }
+
+  void _togglePlayPause() {
+    if (_isPlaying) {
+      _player.pause();
+    } else {
+      _player.play();
+    }
+    _onUserActivity();
+  }
+
+  void _seekRelative(Duration delta) {
+    final target = _position + delta;
+    if (target < Duration.zero) {
+      _player.seek(Duration.zero);
+    } else if (target > _duration) {
+      _player.seek(_duration);
+    } else {
+      _player.seek(target);
+    }
+    _onUserActivity();
   }
 
   void _startPlayback(String path) {
@@ -158,6 +201,9 @@ class _InAppPlayerState extends State<InAppPlayer> {
   @override
   void dispose() {
     _hideTimer?.cancel();
+    if (_isFullScreen) {
+      windowManager.setFullScreen(false);
+    }
     _player.dispose();
     super.dispose();
   }
@@ -222,66 +268,103 @@ class _InAppPlayerState extends State<InAppPlayer> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onHover: (_) => _onUserActivity(),
-      child: GestureDetector(
-        onTap: () {
-          if (_showAudioSubtitlePopover || _showEpisodesDrawer) {
-            setState(() {
-              _showAudioSubtitlePopover = false;
-              _showEpisodesDrawer = false;
-            });
-            return;
-          }
-          setState(() => _showControls = !_showControls);
-          if (_showControls) _startHideTimer();
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyF): _toggleFullScreen,
+        const SingleActivator(LogicalKeyboardKey.space): _togglePlayPause,
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _seekRelative(const Duration(seconds: 10)),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _seekRelative(const Duration(seconds: -10)),
+        const SingleActivator(LogicalKeyboardKey.arrowUp): () {
+          final newVol = (_volume + 5.0).clamp(0.0, 100.0);
+          _player.setVolume(newVol);
+          _onUserActivity();
         },
-        child: Container(
-          color: Colors.black,
-          child: Stack(
-            children: [
-              // Core Video Rendering Surface (media_kit LibMPV texture)
-              Center(
-                child: Video(
-                  controller: _controller,
-                  controls: NoVideoControls,
-                  subtitleViewConfiguration: const SubtitleViewConfiguration(
-                    visible: false,
+        const SingleActivator(LogicalKeyboardKey.arrowDown): () {
+          final newVol = (_volume - 5.0).clamp(0.0, 100.0);
+          _player.setVolume(newVol);
+          _onUserActivity();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyM): () {
+          _player.setVolume(_volume > 0 ? 0.0 : 100.0);
+          _onUserActivity();
+        },
+        const SingleActivator(LogicalKeyboardKey.escape): () async {
+          if (_isFullScreen) {
+            await windowManager.setFullScreen(false);
+            if (mounted) setState(() => _isFullScreen = false);
+          } else {
+            widget.onClose();
+          }
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: MouseRegion(
+          onHover: (_) => _onUserActivity(),
+          child: GestureDetector(
+            onDoubleTap: _toggleFullScreen,
+            onTap: () {
+              if (_showAudioSubtitlePopover || _showEpisodesDrawer) {
+                setState(() {
+                  _showAudioSubtitlePopover = false;
+                  _showEpisodesDrawer = false;
+                });
+                return;
+              }
+              setState(() => _showControls = !_showControls);
+              if (_showControls) _startHideTimer();
+            },
+            child: Container(
+              color: Colors.black,
+              child: Stack(
+                children: [
+                  // Core Video Rendering Surface (media_kit LibMPV texture)
+                  Center(
+                    child: Video(
+                      controller: _controller,
+                      controls: NoVideoControls,
+                      subtitleViewConfiguration: const SubtitleViewConfiguration(
+                        visible: false,
+                      ),
+                    ),
                   ),
-                ),
-              ),
 
-              // Controls Overlay
-              AnimatedOpacity(
-                duration: const Duration(milliseconds: 250),
-                opacity: _showControls ? 1.0 : 0.0,
-                child: IgnorePointer(
-                  ignoring: !_showControls,
-                  child: Stack(
-                    children: [
-                      // Top Bar
-                      Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [
-                                Colors.black.withValues(alpha: 0.85),
-                                Colors.transparent,
-                              ],
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
-                                onPressed: widget.onClose,
+                  // Controls Overlay
+                  AnimatedOpacity(
+                    duration: const Duration(milliseconds: 250),
+                    opacity: _showControls ? 1.0 : 0.0,
+                    child: IgnorePointer(
+                      ignoring: !_showControls,
+                      child: Stack(
+                        children: [
+                          // Top Bar
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Colors.black.withValues(alpha: 0.85),
+                                    Colors.transparent,
+                                  ],
+                                ),
                               ),
+                              child: Row(
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
+                                    onPressed: () async {
+                                      if (_isFullScreen) {
+                                        await windowManager.setFullScreen(false);
+                                      }
+                                      widget.onClose();
+                                    },
+                                  ),
                               const SizedBox(width: 16),
                               Expanded(
                                 child: Column(
@@ -493,6 +576,21 @@ class _InAppPlayerState extends State<InAppPlayer> {
                                       _onUserActivity();
                                     },
                                   ),
+                                  const SizedBox(width: 4),
+
+                                  // Netflix-Style: Fullscreen Button
+                                  IconButton(
+                                    icon: Icon(
+                                      _isFullScreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+                                      color: Colors.white,
+                                      size: 26,
+                                    ),
+                                    tooltip: _isFullScreen ? 'Keluar Layar Penuh (F / Esc)' : 'Layar Penuh (F)',
+                                    onPressed: () {
+                                      _toggleFullScreen();
+                                      _onUserActivity();
+                                    },
+                                  ),
                                 ],
                               ),
                             ],
@@ -517,8 +615,10 @@ class _InAppPlayerState extends State<InAppPlayer> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  ),
+);
+}
 
   /// Netflix-Style 2-Column Audio & Subtitles Menu
   Widget _buildNetflixAudioSubtitleMenu() {

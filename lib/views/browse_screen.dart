@@ -276,9 +276,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (_searchQuery.trim().length >= 2) {
       final q = _searchQuery.toLowerCase();
       final filtered = _localItems.where((item) {
-        return item.title.toLowerCase().contains(q) ||
-            item.genre.toLowerCase().contains(q) ||
-            item.description.toLowerCase().contains(q);
+        final matchesTitle = item.title.toLowerCase().contains(q);
+        final matchesGenre = item.genre.toLowerCase().contains(q);
+        final matchesDesc = item.description.toLowerCase().contains(q);
+        final matchesEpisodes = item.episodes.any((ep) => ep.title.toLowerCase().contains(q));
+        final matchesYear = item.year != null && item.year!.contains(q);
+        return matchesTitle || matchesGenre || matchesDesc || matchesEpisodes || matchesYear;
       }).toList();
 
       return {'Hasil Pencarian "$_searchQuery" (${filtered.length})': filtered};
