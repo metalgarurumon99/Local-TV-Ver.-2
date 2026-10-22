@@ -493,32 +493,40 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // If playing, show full embedded player overlay
-    if (_currentlyPlaying != null) {
-      return InAppPlayer(
-        item: _currentlyPlaying!,
-        playlist: _currentPlayingPlaylist.isNotEmpty ? _currentPlayingPlaylist : [_currentlyPlaying!],
-        allLibraryItems: _localItems,
-        onMediaChanged: (newItem) {
-          setState(() {
-            _currentlyPlaying = newItem;
-          });
-        },
-        onClose: () {
-          setState(() {
-            _currentlyPlaying = null;
-            _currentPlayingPlaylist = [];
-          });
-          _loadWatchHistory();
-        },
-      );
-    }
-
     final displayGroups = _buildDisplayGroups();
     final featured = _featuredItem;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF111111),
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      switchInCurve: Curves.easeOutQuad,
+      switchOutCurve: Curves.easeInQuad,
+      child: _currentlyPlaying != null
+          ? KeyedSubtree(
+              key: const ValueKey('in_app_player_view'),
+              child: InAppPlayer(
+                item: _currentlyPlaying!,
+                playlist: _currentPlayingPlaylist.isNotEmpty
+                    ? _currentPlayingPlaylist
+                    : [_currentlyPlaying!],
+                allLibraryItems: _localItems,
+                onMediaChanged: (newItem) {
+                  setState(() {
+                    _currentlyPlaying = newItem;
+                  });
+                },
+                onClose: () {
+                  setState(() {
+                    _currentlyPlaying = null;
+                    _currentPlayingPlaylist = [];
+                  });
+                  _loadWatchHistory();
+                },
+              ),
+            )
+          : KeyedSubtree(
+              key: const ValueKey('catalog_scaffold_view'),
+              child: Scaffold(
+                backgroundColor: const Color(0xFF111111),
       body: Column(
         children: [
           const RepaintBoundary(child: CustomAppTitleBar()),
@@ -730,6 +738,8 @@ class _BrowseScreenState extends State<BrowseScreen> {
     ),
   ],
 ),
+),
+),
 );
-}
+  }
 }

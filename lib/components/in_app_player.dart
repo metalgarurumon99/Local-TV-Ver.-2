@@ -51,6 +51,10 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
   String? _resumeToastMessage;
   Timer? _resumeToastTimer;
 
+  // Seamless First-Frame Poster Crossfade State
+  bool _hasRenderedFirstFrame = false;
+  Timer? _firstFrameFallbackTimer;
+
   // Track & Subtitle selection state
   Tracks _tracks = const Tracks();
   Track _currentTrack = const Track();
@@ -77,7 +81,14 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
     _loadResumePosition();
 
     _player.stream.position.listen((pos) {
-      if (mounted) setState(() => _position = pos);
+      if (mounted) {
+        setState(() {
+          _position = pos;
+          if (!_hasRenderedFirstFrame && pos > Duration.zero) {
+            _hasRenderedFirstFrame = true;
+          }
+        });
+      }
     });
 
     _player.stream.duration.listen((dur) {
@@ -93,7 +104,14 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
     });
 
     _player.stream.playing.listen((playing) {
-      if (mounted) setState(() => _isPlaying = playing);
+      if (mounted) {
+        setState(() {
+          _isPlaying = playing;
+          if (!_hasRenderedFirstFrame && playing && _position > Duration.zero) {
+            _hasRenderedFirstFrame = true;
+          }
+        });
+      }
     });
 
     _player.stream.volume.listen((vol) {
@@ -108,8 +126,19 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
       if (mounted) setState(() => _currentTrack = track);
     });
 
-    // Auto enter Fullscreen when video playback starts
-    _enterFullScreen();
+    // Defer enter fullscreen to post-frame to eliminate Win32 DWM resize & texture clash
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _enterFullScreen();
+      }
+    });
+
+    // Safety fallback timer so poster crossfades even on blank/instant start
+    _firstFrameFallbackTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted && !_hasRenderedFirstFrame) {
+        setState(() => _hasRenderedFirstFrame = true);
+      }
+    });
 
     // Periodic watch history saving every 4 seconds
     _historyTimer = Timer.periodic(const Duration(seconds: 4), (_) => _saveWatchProgress());
@@ -192,6 +221,7 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
     _hideTimer?.cancel();
     _historyTimer?.cancel();
     _resumeToastTimer?.cancel();
+    _firstFrameFallbackTimer?.cancel();
     windowManager.removeListener(this);
     _saveWatchProgress();
     _player.dispose();
@@ -254,10 +284,17 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
 
   void _switchMedia(MediaItem newItem) {
     _saveWatchProgress();
+    _firstFrameFallbackTimer?.cancel();
     setState(() {
       _currentItem = newItem;
+      _hasRenderedFirstFrame = false;
       _showEpisodesDrawer = false;
       _showAudioSubtitlePopover = false;
+    });
+    _firstFrameFallbackTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted && !_hasRenderedFirstFrame) {
+        setState(() => _hasRenderedFirstFrame = true);
+      }
     });
     widget.onMediaChanged?.call(newItem);
     _loadResumePosition();
@@ -430,6 +467,49 @@ class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
                       controls: NoVideoControls,
                       subtitleViewConfiguration: const SubtitleViewConfiguration(
                         visible: false,
+                      ),
+                    ),
+                  ),
+
+                  // First-Frame Poster Crossfade & Cinema Dimming Layer
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: _hasRenderedFirstFrame,
+                      child: AnimatedOpacity(
+                        opacity: _hasRenderedFirstFrame ? 0.0 : 1.0,
+                        duration: const Duration(milliseconds: 350),
+                        curve: Curves.easeOutCubic,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _buildPosterThumbnail(_currentItem),
+                            // Cinematic ambient vignette & dimming
+                            Container(
+                              decoration: BoxDecoration(
+                                gradient: RadialGradient(
+                                  center: Alignment.center,
+                                  radius: 1.1,
+                                  colors: [
+                                    Colors.black.withValues(alpha: 0.35),
+                                    Colors.black.withValues(alpha: 0.90),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            // Subtle luxury spinner while waiting for first video frame
+                            if (!_hasRenderedFirstFrame)
+                              const Center(
+                                child: SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3.0,
+                                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFE50914)),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
