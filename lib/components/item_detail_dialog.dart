@@ -447,24 +447,63 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                             final sizeMb = ep.fileSize != null
                                 ? '${(ep.fileSize! / (1024 * 1024)).toStringAsFixed(1)} MB'
                                 : '';
+                            final hasThumb = ep.thumbnail != null && ep.thumbnail!.isNotEmpty;
 
                             return ListTile(
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                              leading: Container(
-                                width: 32,
-                                height: 32,
-                                decoration: BoxDecoration(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              leading: ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: Container(
+                                  width: 80,
+                                  height: 48,
                                   color: Colors.white.withValues(alpha: 0.08),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    '${index + 1}',
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                    ),
+                                  child: Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      if (hasThumb)
+                                        Image.network(
+                                          ep.thumbnail!,
+                                          width: 80,
+                                          height: 48,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, _, _) => Center(
+                                            child: Text(
+                                              '${index + 1}',
+                                              style: const TextStyle(
+                                                color: Colors.white70,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ),
+                                        )
+                                      else
+                                        Center(
+                                          child: Text(
+                                            '${index + 1}',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ),
+                                      Positioned(
+                                        top: 2,
+                                        left: 2,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withValues(alpha: 0.7),
+                                            borderRadius: BorderRadius.circular(2),
+                                          ),
+                                          child: Text(
+                                            'E${ep.episodeNumber}',
+                                            style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -476,9 +515,23 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              subtitle: Text(
-                                'Season ${ep.season}${sizeMb.isNotEmpty ? ' • $sizeMb' : ''}',
-                                style: const TextStyle(color: Colors.white38, fontSize: 12),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Season ${ep.season}${sizeMb.isNotEmpty ? ' • $sizeMb' : ''}',
+                                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                                  ),
+                                  if (ep.synopsis != null && ep.synopsis!.isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      ep.synopsis!,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: Colors.white60, fontSize: 11, height: 1.3),
+                                    ),
+                                  ],
+                                ],
                               ),
                               trailing: IconButton(
                                 icon: const Icon(Icons.play_circle_fill_rounded, color: Color(0xFFE50914), size: 30),

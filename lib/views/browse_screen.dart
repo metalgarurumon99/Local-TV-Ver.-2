@@ -36,30 +36,56 @@ class _BrowseScreenState extends State<BrowseScreen> {
     _loadInitialLibrary();
   }
 
-  Future<void> _loadInitialLibrary() async {
+  /// Instant Cache-First Startup + Non-blocking Background Sync
+  Future<void> _loadInitialLibrary({bool forceFullRescan = false}) async {
     final folders = await LocalLibraryService.getConnectedFolders();
+    final cached = await LocalLibraryService.getCachedItems();
+
     if (mounted) {
       setState(() {
         _connectedFolders = folders;
+        if (cached.isNotEmpty && !forceFullRescan) {
+          _localItems = cached;
+        }
       });
     }
 
     if (folders.isNotEmpty) {
-      setState(() {
-        _isScanningFolders = true;
-        _scanStatus = 'Memindai folder film & serial Anda...';
-      });
+      final shouldShowBlockingScan = (cached.isEmpty && _localItems.isEmpty) || forceFullRescan;
+      if (shouldShowBlockingScan && mounted) {
+        setState(() {
+          _isScanningFolders = true;
+          _scanStatus = 'Memindai folder film & serial Anda...';
+        });
+      }
 
+      // Background non-blocking sync
+      _runBackgroundScan(shouldShowBlockingScan: shouldShowBlockingScan);
+    }
+  }
+
+  Future<void> _runBackgroundScan({required bool shouldShowBlockingScan}) async {
+    try {
       final items = await LocalLibraryService.scanAllFolders(
         fetchOnlineMetadata: true,
         onProgress: (msg) {
-          if (mounted) setState(() => _scanStatus = msg);
+          if (mounted && shouldShowBlockingScan) {
+            setState(() => _scanStatus = msg);
+          }
         },
       );
 
       if (mounted) {
         setState(() {
           _localItems = items;
+          _isScanningFolders = false;
+          _scanStatus = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Background sync error: $e');
+      if (mounted && shouldShowBlockingScan) {
+        setState(() {
           _isScanningFolders = false;
           _scanStatus = null;
         });
@@ -135,36 +161,48 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (item.isSeries && item.episodes.isNotEmpty) {
       // Build playlist containing each episode of this series
       playlist = item.episodes.map((ep) {
+        final epDesc = (ep.synopsis != null && ep.synopsis!.isNotEmpty)
+            ? ep.synopsis!
+            : item.description;
+        final epThumb = ep.thumbnail ?? item.customThumbnail;
+
         return MediaItem(
           id: ep.id,
-          title: '${item.title} - ${ep.title}',
-          description: item.description,
+          title: ep.title.isNotEmpty ? ep.title : '${item.title} - Episode ${ep.episodeNumber}',
+          description: epDesc,
           genre: item.genre,
           maturity: item.maturity,
           slug: item.slug,
           category: item.category,
           videoPath: ep.videoPath,
-          customThumbnail: item.customThumbnail,
+          customThumbnail: epThumb,
           year: item.year,
           rating: item.rating,
           isSeries: true,
+          episodes: item.episodes,
         );
       }).toList();
 
       final firstEp = item.episodes.first;
+      final firstEpDesc = (firstEp.synopsis != null && firstEp.synopsis!.isNotEmpty)
+          ? firstEp.synopsis!
+          : item.description;
+      final firstEpThumb = firstEp.thumbnail ?? item.customThumbnail;
+
       final playItem = MediaItem(
         id: firstEp.id,
-        title: '${item.title} - ${firstEp.title}',
-        description: item.description,
+        title: firstEp.title.isNotEmpty ? firstEp.title : '${item.title} - Episode ${firstEp.episodeNumber}',
+        description: firstEpDesc,
         genre: item.genre,
         maturity: item.maturity,
         slug: item.slug,
         category: item.category,
         videoPath: firstEp.videoPath,
-        customThumbnail: item.customThumbnail,
+        customThumbnail: firstEpThumb,
         year: item.year,
         rating: item.rating,
         isSeries: true,
+        episodes: item.episodes,
       );
 
       setState(() {
@@ -516,6 +554,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
               },
               onPickLocalFile: _pickLocalFile,
               onManageFolders: _openManageFoldersDialog,
+              onSyncLibrary: () => _loadInitialLibrary(forceFullRescan: true),
             ),
           ),
         ],

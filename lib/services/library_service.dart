@@ -33,6 +33,7 @@ class LocalLibraryService {
     return {
       'folders': <String>[],
       'customMetadata': <String, dynamic>{},
+      'cachedItems': <dynamic>[],
     };
   }
 
@@ -43,6 +44,29 @@ class LocalLibraryService {
     } catch (e) {
       debugPrint('Error writing library config: $e');
     }
+  }
+
+  /// Get cached media items from last session for instant (0ms) app startup
+  static Future<List<MediaItem>> getCachedItems() async {
+    final config = await _readConfig();
+    final rawList = config['cachedItems'] as List<dynamic>? ?? [];
+    return rawList
+        .map((e) {
+          try {
+            return MediaItem.fromJson(e as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<MediaItem>()
+        .toList();
+  }
+
+  /// Save current media items list to disk cache
+  static Future<void> saveCachedItems(List<MediaItem> items) async {
+    final config = await _readConfig();
+    config['cachedItems'] = items.map((e) => e.toJson()).toList();
+    await _writeConfig(config);
   }
 
   /// Get all connected folders
@@ -254,6 +278,38 @@ class LocalLibraryService {
           onProgress?.call('Mencari info online: ${item.title}');
           final online = await OnlineMetadataService.searchMetadata(item.title);
           if (online != null) {
+            List<Episode> updatedEpisodes = item.episodes;
+            if (online.episodes.isNotEmpty) {
+              updatedEpisodes = item.episodes.map((localEp) {
+                // Find matching episode by season and episodeNumber, or index
+                final match = online.episodes.firstWhere(
+                  (oe) => oe.season == localEp.season && oe.episodeNumber == localEp.episodeNumber,
+                  orElse: () {
+                    final idx = localEp.episodeNumber - 1;
+                    if (idx >= 0 && idx < online.episodes.length) {
+                      return online.episodes[idx];
+                    }
+                    return const EpisodeOnlineMetadata(
+                      season: 1,
+                      episodeNumber: 1,
+                      title: '',
+                      synopsis: '',
+                    );
+                  },
+                );
+
+                if (match.title.isNotEmpty) {
+                  return localEp.copyWith(
+                    title: match.title,
+                    synopsis: match.synopsis.isNotEmpty ? match.synopsis : localEp.synopsis,
+                    thumbnail: match.thumbnailUrl ?? localEp.thumbnail,
+                    duration: match.duration ?? localEp.duration,
+                  );
+                }
+                return localEp;
+              }).toList();
+            }
+
             item = item.copyWith(
               title: online.title,
               description: online.blurb,
@@ -261,6 +317,7 @@ class LocalLibraryService {
               year: online.year ?? item.year,
               rating: online.rating ?? item.rating,
               genre: online.genre ?? item.genre,
+              episodes: updatedEpisodes,
             );
             // Cache by groupKey & title
             customMetadataMap[groupKey] = item.toJson();
@@ -274,12 +331,13 @@ class LocalLibraryService {
       resultItems.add(item);
     }
 
-    // Save updated metadata cache to config
-    config['customMetadata'] = customMetadataMap;
-    await _writeConfig(config);
-
     // Sort alphabetically by title
     resultItems.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+
+    // Save updated metadata and entire cached items list to config for instant startup
+    config['customMetadata'] = customMetadataMap;
+    config['cachedItems'] = resultItems.map((e) => e.toJson()).toList();
+    await _writeConfig(config);
 
     return resultItems;
   }

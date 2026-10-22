@@ -6,6 +6,7 @@ class NetflixNavbar extends StatefulWidget {
   final ValueChanged<String> onSearchChanged;
   final VoidCallback onPickLocalFile;
   final VoidCallback onManageFolders;
+  final VoidCallback? onSyncLibrary;
   final int folderCount;
 
   const NetflixNavbar({
@@ -15,6 +16,7 @@ class NetflixNavbar extends StatefulWidget {
     required this.onSearchChanged,
     required this.onPickLocalFile,
     required this.onManageFolders,
+    this.onSyncLibrary,
     this.folderCount = 0,
   });
 
@@ -148,6 +150,13 @@ class _NetflixNavbarState extends State<NetflixNavbar> {
                   borderRadius: BorderRadius.circular(6),
                 ),
               ),
+            ),
+          // Sync / Verify Online Info Button
+          if (widget.onSyncLibrary != null)
+            IconButton(
+              icon: const Icon(Icons.sync_rounded, color: Colors.white70, size: 20),
+              tooltip: 'Sinkronisasi & Verifikasi Info Online',
+              onPressed: widget.onSyncLibrary,
             ),
 
           const Spacer(),

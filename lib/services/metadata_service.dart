@@ -2,6 +2,24 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+class EpisodeOnlineMetadata {
+  final int season;
+  final int episodeNumber;
+  final String title;
+  final String synopsis;
+  final String? thumbnailUrl;
+  final String? duration;
+
+  const EpisodeOnlineMetadata({
+    required this.season,
+    required this.episodeNumber,
+    required this.title,
+    required this.synopsis,
+    this.thumbnailUrl,
+    this.duration,
+  });
+}
+
 class OnlineMetadataResult {
   final String title;
   final String blurb; // Sinopsis / Overview
@@ -11,6 +29,7 @@ class OnlineMetadataResult {
   final String? rating;
   final String? genre;
   final String source;
+  final List<EpisodeOnlineMetadata> episodes;
 
   const OnlineMetadataResult({
     required this.title,
@@ -21,6 +40,7 @@ class OnlineMetadataResult {
     this.rating,
     this.genre,
     required this.source,
+    this.episodes = const [],
   });
 }
 
@@ -32,7 +52,7 @@ class OnlineMetadataService {
     final clean = queryTitle.trim();
     if (clean.length < 2) return null;
 
-    // 1. Try TVMaze (for Western Movies, TV Shows, Documentaries)
+    // 1. Try TVMaze (for Western Movies, TV Shows, Documentaries, Anime)
     try {
       final tvMazeResult = await _fetchTVMaze(clean);
       if (tvMazeResult != null) return tvMazeResult;
@@ -51,10 +71,10 @@ class OnlineMetadataService {
     return null;
   }
 
-  /// TVMaze API - Free & No API Key Required
+  /// TVMaze API - Free & No API Key Required, includes per-episode details
   static Future<OnlineMetadataResult?> _fetchTVMaze(String title) async {
     final uri = Uri.parse(
-      'https://api.tvmaze.com/singlesearch/shows?q=${Uri.encodeComponent(title)}',
+      'https://api.tvmaze.com/singlesearch/shows?q=${Uri.encodeComponent(title)}&embed=episodes',
     );
 
     final res = await http.get(uri).timeout(_timeout);
@@ -77,6 +97,33 @@ class OnlineMetadataService {
       final genresList = (data['genres'] as List<dynamic>?)?.map((e) => e.toString()).toList();
       final genre = genresList != null && genresList.isNotEmpty ? genresList.join(', ') : 'Drama';
 
+      // Parse embedded episodes
+      final embedded = data['_embedded'] as Map<String, dynamic>?;
+      final rawEpisodes = embedded?['episodes'] as List<dynamic>? ?? [];
+      final List<EpisodeOnlineMetadata> episodeList = [];
+
+      for (final ep in rawEpisodes) {
+        if (ep is Map<String, dynamic>) {
+          final epName = ep['name'] as String? ?? 'Episode';
+          final epSeason = (ep['season'] as num?)?.toInt() ?? 1;
+          final epNumber = (ep['number'] as num?)?.toInt() ?? 1;
+          final epSummary = _stripHtml(ep['summary'] as String? ?? '');
+          final epImgObj = ep['image'] as Map<String, dynamic>?;
+          final epThumb = (epImgObj?['medium'] ?? epImgObj?['original']) as String?;
+          final runtime = ep['runtime'] as num?;
+          final durationStr = runtime != null ? '${runtime}m' : null;
+
+          episodeList.add(EpisodeOnlineMetadata(
+            season: epSeason,
+            episodeNumber: epNumber,
+            title: epName,
+            synopsis: epSummary,
+            thumbnailUrl: epThumb,
+            duration: durationStr,
+          ));
+        }
+      }
+
       return OnlineMetadataResult(
         title: name,
         blurb: cleanBlurb.isNotEmpty ? cleanBlurb : 'Tidak ada sinopsis tersedia.',
@@ -85,6 +132,7 @@ class OnlineMetadataService {
         rating: rating,
         genre: genre,
         source: 'TVMaze',
+        episodes: episodeList,
       );
     }
     return null;

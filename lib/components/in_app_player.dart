@@ -231,8 +231,8 @@ class _InAppPlayerState extends State<InAppPlayer> {
     if (item.isNetworkImage) {
       return Image.network(
         item.customThumbnail!,
-        width: 100,
-        height: 60,
+        width: double.infinity,
+        height: double.infinity,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
       );
@@ -240,16 +240,16 @@ class _InAppPlayerState extends State<InAppPlayer> {
     if (item.customThumbnail != null && File(item.customThumbnail!).existsSync()) {
       return Image.file(
         File(item.customThumbnail!),
-        width: 100,
-        height: 60,
+        width: double.infinity,
+        height: double.infinity,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
       );
     }
     return Image.asset(
       item.thumbnailPath,
-      width: 100,
-      height: 60,
+      width: double.infinity,
+      height: double.infinity,
       fit: BoxFit.cover,
       errorBuilder: (_, _, _) => _buildThumbnailPlaceholder(),
     );
@@ -257,11 +257,9 @@ class _InAppPlayerState extends State<InAppPlayer> {
 
   Widget _buildThumbnailPlaceholder() {
     return Container(
-      width: 100,
-      height: 60,
       color: const Color(0xFF222222),
       child: const Center(
-        child: Icon(Icons.movie, size: 24, color: Colors.white24),
+        child: Icon(Icons.movie_filter_rounded, size: 24, color: Colors.white24),
       ),
     );
   }
@@ -602,14 +600,12 @@ class _InAppPlayerState extends State<InAppPlayer> {
                 ),
               ),
 
-              // Netflix-Style Episodes Slide-Over Drawer
+              // Netflix-Style Episodes Card / Pop-up (Max Half Screen Height)
               if (_showEpisodesDrawer && widget.playlist.isNotEmpty)
                 Positioned(
-                  top: 0,
-                  bottom: 0,
-                  right: 0,
-                  width: 360,
-                  child: _buildNetflixEpisodesDrawer(),
+                  bottom: 85,
+                  right: 24,
+                  child: _buildNetflixEpisodesPopup(),
                 ),
             ],
           ),
@@ -829,41 +825,55 @@ class _InAppPlayerState extends State<InAppPlayer> {
     );
   }
 
-  /// Netflix-Style Episodes Drawer Slide-Over
-  Widget _buildNetflixEpisodesDrawer() {
+  /// Netflix-Style Episodes Card / Pop-up (Max Half Screen Height, Compact Vertical with Thumbnail Left, Synopsis Right)
+  Widget _buildNetflixEpisodesPopup() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final popupWidth = screenWidth < 700 ? screenWidth * 0.92 : 540.0;
+    final maxHeight = screenHeight * 0.50; // Tepat maksimal setengah layar!
+
     return Container(
+      width: popupWidth,
+      constraints: BoxConstraints(maxHeight: maxHeight),
       decoration: BoxDecoration(
-        color: const Color(0xF7141414),
-        border: const Border(left: BorderSide(color: Colors.white12)),
+        color: const Color(0xF7161616),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white24, width: 0.8),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.8),
-            blurRadius: 20,
-            offset: const Offset(-8, 0),
+            color: Colors.black.withValues(alpha: 0.85),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
           ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Drawer Header
+          // Header
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 20, 16, 12),
+            padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
             child: Row(
               children: [
-                const Icon(Icons.video_library_rounded, color: Color(0xFFE50914), size: 20),
-                const SizedBox(width: 10),
-                const Text(
-                  'Daftar Episode & Video',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+                const Icon(Icons.video_library_rounded, color: Color(0xFFE50914), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Episodes (${widget.playlist.length})',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
                   ),
                 ),
-                const Spacer(),
                 IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white60, size: 20),
+                  icon: const Icon(Icons.close, color: Colors.white70, size: 18),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Tutup',
                   onPressed: () => setState(() => _showEpisodesDrawer = false),
                 ),
               ],
@@ -871,52 +881,81 @@ class _InAppPlayerState extends State<InAppPlayer> {
           ),
           const Divider(color: Colors.white12, height: 1),
 
-          // Playlist Item List
-          Expanded(
+          // Scrollable Episodes List
+          Flexible(
             child: ListView.separated(
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              shrinkWrap: true,
               itemCount: widget.playlist.length,
               separatorBuilder: (context, index) => const Divider(color: Colors.white10, height: 1),
               itemBuilder: (ctx, index) {
                 final item = widget.playlist[index];
                 final isCurrent = item.videoPath == _currentItem.videoPath;
+                final badgeText = isCurrent ? 'S1E${index + 1} • NOW PLAYING' : 'S1E${index + 1}';
 
                 return InkWell(
-                  onTap: () => _switchMedia(item),
+                  onTap: () {
+                    _switchMedia(item);
+                  },
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    color: isCurrent ? const Color(0xFFE50914).withValues(alpha: 0.15) : Colors.transparent,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    color: isCurrent ? const Color(0xFFE50914).withValues(alpha: 0.12) : Colors.transparent,
                     child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Episode Index
+                        // Left Column: Compact 16:9 Thumbnail with Badges
                         SizedBox(
-                          width: 24,
-                          child: Text(
-                            '${index + 1}',
-                            style: TextStyle(
-                              color: isCurrent ? const Color(0xFFE50914) : Colors.white38,
-                              fontSize: 15,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-
-                        // Thumbnail
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
+                          width: 140,
+                          height: 78,
                           child: Stack(
-                            alignment: Alignment.center,
                             children: [
-                              _buildPosterThumbnail(item),
+                              Container(
+                                width: 140,
+                                height: 78,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: isCurrent ? const Color(0xFFE50914) : Colors.white12,
+                                    width: isCurrent ? 1.5 : 0.8,
+                                  ),
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(3),
+                                  child: _buildPosterThumbnail(item),
+                                ),
+                              ),
+                              // Top-Left Badge (S1E... / S1E... Now Playing)
+                              Positioned(
+                                top: 3,
+                                left: 3,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isCurrent ? const Color(0xFFE50914) : Colors.black.withValues(alpha: 0.8),
+                                    borderRadius: BorderRadius.circular(3),
+                                  ),
+                                  child: Text(
+                                    badgeText,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.3,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              // Center Equalizer if Current
                               if (isCurrent)
-                                Container(
-                                  width: 100,
-                                  height: 60,
-                                  color: Colors.black45,
-                                  child: const Center(
-                                    child: Icon(Icons.equalizer_rounded, color: Color(0xFFE50914), size: 24),
+                                Positioned.fill(
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.black38,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Center(
+                                      child: Icon(Icons.equalizer_rounded, color: Colors.white, size: 22),
+                                    ),
                                   ),
                                 ),
                             ],
@@ -924,32 +963,34 @@ class _InAppPlayerState extends State<InAppPlayer> {
                         ),
                         const SizedBox(width: 12),
 
-                        // Title & Status
+                        // Right Column: Title & Synopsis
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
                                 item.title,
-                                maxLines: 2,
+                                maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: isCurrent ? Colors.white : Colors.white70,
-                                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+                                  color: isCurrent ? const Color(0xFFE50914) : Colors.white,
+                                  fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                 ),
                               ),
-                              if (isCurrent) ...[
-                                const SizedBox(height: 4),
-                                const Text(
-                                  'Sedang Diputar',
-                                  style: TextStyle(
-                                    color: Color(0xFFE50914),
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                              const SizedBox(height: 4),
+                              Text(
+                                item.description.isNotEmpty
+                                    ? item.description
+                                    : 'Sinopsis episode belum tersedia.',
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white60,
+                                  fontSize: 11,
+                                  height: 1.35,
                                 ),
-                              ],
+                              ),
                             ],
                           ),
                         ),

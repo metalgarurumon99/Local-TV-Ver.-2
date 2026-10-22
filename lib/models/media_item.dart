@@ -6,6 +6,8 @@ class Episode {
   final int episodeNumber;
   final int? fileSize;
   final String? duration;
+  final String? synopsis;
+  final String? thumbnail;
 
   const Episode({
     required this.id,
@@ -15,7 +17,33 @@ class Episode {
     this.episodeNumber = 1,
     this.fileSize,
     this.duration,
+    this.synopsis,
+    this.thumbnail,
   });
+
+  Episode copyWith({
+    String? id,
+    String? title,
+    String? videoPath,
+    int? season,
+    int? episodeNumber,
+    int? fileSize,
+    String? duration,
+    String? synopsis,
+    String? thumbnail,
+  }) {
+    return Episode(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      videoPath: videoPath ?? this.videoPath,
+      season: season ?? this.season,
+      episodeNumber: episodeNumber ?? this.episodeNumber,
+      fileSize: fileSize ?? this.fileSize,
+      duration: duration ?? this.duration,
+      synopsis: synopsis ?? this.synopsis,
+      thumbnail: thumbnail ?? this.thumbnail,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -25,6 +53,8 @@ class Episode {
     'episodeNumber': episodeNumber,
     'fileSize': fileSize,
     'duration': duration,
+    'synopsis': synopsis,
+    'thumbnail': thumbnail,
   };
 
   factory Episode.fromJson(Map<String, dynamic> json) => Episode(
@@ -35,6 +65,8 @@ class Episode {
     episodeNumber: (json['episodeNumber'] as num?)?.toInt() ?? 1,
     fileSize: (json['fileSize'] as num?)?.toInt(),
     duration: json['duration'] as String?,
+    synopsis: json['synopsis'] as String?,
+    thumbnail: json['thumbnail'] as String?,
   );
 }
 
