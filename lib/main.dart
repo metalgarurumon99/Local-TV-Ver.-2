@@ -18,6 +18,7 @@ void main() async {
     center: true,
     title: 'Local TV Ver. 2',
     backgroundColor: Color(0xFF111111),
+    titleBarStyle: TitleBarStyle.hidden,
   );
 
   windowManager.waitUntilReadyToShow(windowOptions, () async {

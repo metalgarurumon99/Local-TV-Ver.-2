@@ -3,9 +3,12 @@ import 'package:flutter/material.dart';
 import '../models/media_item.dart';
 import '../data/sample_media.dart';
 import '../services/library_service.dart';
+import '../services/watch_history_service.dart';
 import '../components/netflix_navbar.dart';
 import '../components/hero_billboard.dart';
 import '../components/content_row.dart';
+import '../components/continue_watching_row.dart';
+import '../components/custom_app_title_bar.dart';
 import '../components/in_app_player.dart';
 import '../components/item_detail_dialog.dart';
 import '../components/edit_metadata_dialog.dart';
@@ -27,6 +30,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
   // Local files and multi-folder state
   List<String> _connectedFolders = [];
   List<MediaItem> _localItems = [];
+  List<WatchHistoryEntry> _watchHistory = [];
   bool _isScanningFolders = false;
   String? _scanStatus;
 
@@ -34,6 +38,41 @@ class _BrowseScreenState extends State<BrowseScreen> {
   void initState() {
     super.initState();
     _loadInitialLibrary();
+    _loadWatchHistory();
+  }
+
+  Future<void> _loadWatchHistory() async {
+    final history = await WatchHistoryService.getRecentHistory();
+    if (mounted) {
+      setState(() => _watchHistory = history);
+    }
+  }
+
+  void _resumeFromHistory(WatchHistoryEntry entry) {
+    MediaItem? matched;
+    for (final it in _localItems) {
+      if (it.id == entry.mediaId || it.videoPath == entry.videoPath) {
+        matched = it;
+        break;
+      }
+    }
+    if (matched != null) {
+      _playMedia(matched);
+    } else {
+      final fallback = MediaItem(
+        id: entry.mediaId,
+        title: entry.mediaTitle,
+        description: '',
+        genre: '',
+        maturity: '',
+        slug: '',
+        category: entry.category,
+        videoPath: entry.videoPath,
+        customThumbnail: entry.thumbnailPath,
+        isSeries: entry.isSeries,
+      );
+      _playMedia(fallback);
+    }
   }
 
   /// Instant Cache-First Startup + Non-blocking Background Sync
@@ -397,6 +436,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             _currentlyPlaying = null;
             _currentPlayingPlaylist = [];
           });
+          _loadWatchHistory();
         },
       );
     }
@@ -406,27 +446,45 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF111111),
-      body: Stack(
+      body: Column(
         children: [
-          // Scrollable Content Catalog
-          SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          const RepaintBoundary(child: CustomAppTitleBar()),
+          Expanded(
+            child: Stack(
               children: [
-                // Hero Banner (Featured item from user's local collection)
-                if (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
-                  RepaintBoundary(
-                    child: HeroBillboard(
-                      featuredItem: featured,
-                      onPlay: () => _playMedia(featured),
-                      onMoreInfo: () => _showItemDetails(featured),
-                    ),
-                  )
-                else if (_localItems.isNotEmpty)
-                  const SizedBox(height: 100)
-                else
-                  const SizedBox(height: 80),
+                // Scrollable Content Catalog
+                SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Hero Banner (Featured item from user's local collection)
+                      if (_searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty)
+                        RepaintBoundary(
+                          child: HeroBillboard(
+                            featuredItem: featured,
+                            onPlay: () => _playMedia(featured),
+                            onMoreInfo: () => _showItemDetails(featured),
+                          ),
+                        )
+                      else if (_localItems.isNotEmpty)
+                        const SizedBox(height: 100)
+                      else
+                        const SizedBox(height: 80),
+
+                      // Continue Watching Row (if there is history)
+                      if (_watchHistory.isNotEmpty && _searchQuery.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: ContinueWatchingRow(
+                            items: _watchHistory,
+                            onResume: _resumeFromHistory,
+                            onRemove: (entry) async {
+                              await WatchHistoryService.removeEntry(entry.mediaId);
+                              _loadWatchHistory();
+                            },
+                          ),
+                        ),
 
                 // Empty State if no folder connected or no items found
                 if (_localItems.isEmpty && !_isScanningFolders)
@@ -589,6 +647,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
             ),
         ],
       ),
-    );
-  }
+    ),
+  ],
+),
+);
+}
 }

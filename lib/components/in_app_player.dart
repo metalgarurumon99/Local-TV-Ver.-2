@@ -7,6 +7,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 import '../models/media_item.dart';
 import '../services/thumbnail_service.dart';
+import '../services/watch_history_service.dart';
+import 'custom_app_title_bar.dart';
 
 class InAppPlayer extends StatefulWidget {
   final MediaItem item;
@@ -26,19 +28,25 @@ class InAppPlayer extends StatefulWidget {
   State<InAppPlayer> createState() => _InAppPlayerState();
 }
 
-class _InAppPlayerState extends State<InAppPlayer> {
+class _InAppPlayerState extends State<InAppPlayer> with WindowListener {
   late final Player _player;
   late final VideoController _controller;
   late MediaItem _currentItem;
 
   bool _showControls = true;
   Timer? _hideTimer;
+  Timer? _historyTimer;
 
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _isPlaying = true;
   double _volume = 100.0;
   bool _isFullScreen = false;
+
+  // Resume Watch History State
+  int? _resumePositionMs;
+  String? _resumeToastMessage;
+  Timer? _resumeToastTimer;
 
   // Track & Subtitle selection state
   Tracks _tracks = const Tracks();
@@ -49,6 +57,7 @@ class _InAppPlayerState extends State<InAppPlayer> {
   @override
   void initState() {
     super.initState();
+    windowManager.addListener(this);
     _currentItem = widget.item;
 
     // Enable native libass rendering so subtitle styling is identical to original MPV
@@ -61,12 +70,22 @@ class _InAppPlayerState extends State<InAppPlayer> {
 
     _applyMpvSubtitleStyling();
 
+    _loadResumePosition();
+
     _player.stream.position.listen((pos) {
       if (mounted) setState(() => _position = pos);
     });
 
     _player.stream.duration.listen((dur) {
-      if (mounted) setState(() => _duration = dur);
+      if (mounted) {
+        setState(() => _duration = dur);
+        if (dur > Duration.zero && _resumePositionMs != null) {
+          final target = _resumePositionMs!;
+          _resumePositionMs = null;
+          _player.seek(Duration(milliseconds: target));
+          _showResumeToast('Melanjutkan dari ${_formatDuration(Duration(milliseconds: target))}');
+        }
+      }
     });
 
     _player.stream.playing.listen((playing) {
@@ -89,35 +108,92 @@ class _InAppPlayerState extends State<InAppPlayer> {
       if (mounted) setState(() => _isFullScreen = val);
     });
 
+    // Periodic watch history saving every 4 seconds
+    _historyTimer = Timer.periodic(const Duration(seconds: 4), (_) => _saveWatchProgress());
+
     // Start playback
     _startPlayback(_currentItem.videoPath);
     _startHideTimer();
   }
 
-  Future<void> _toggleFullScreen() async {
+  Future<void> _loadResumePosition() async {
+    final entry = await WatchHistoryService.getProgress(_currentItem.id);
+    if (entry != null && entry.positionMs > 5000 && !entry.isCompleted) {
+      _resumePositionMs = entry.positionMs;
+    }
+  }
+
+  void _showResumeToast(String msg) {
+    _resumeToastTimer?.cancel();
+    if (mounted) {
+      setState(() => _resumeToastMessage = msg);
+      _resumeToastTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted) setState(() => _resumeToastMessage = null);
+      });
+    }
+  }
+
+  void _saveWatchProgress() {
+    if (_duration.inMilliseconds <= 0 || _position.inMilliseconds < 2000) return;
+    WatchHistoryService.saveProgress(
+      mediaId: _currentItem.id,
+      mediaTitle: _currentItem.title,
+      videoPath: _currentItem.videoPath,
+      thumbnailPath: _currentItem.customThumbnail ?? _currentItem.thumbnailPath,
+      category: _currentItem.category,
+      isSeries: _currentItem.isSeries,
+      positionMs: _position.inMilliseconds,
+      durationMs: _duration.inMilliseconds,
+    );
+  }
+
+  @override
+  void onWindowEnterFullScreen() {
+    if (mounted && !_isFullScreen) setState(() => _isFullScreen = true);
+  }
+
+  @override
+  void onWindowLeaveFullScreen() {
+    if (mounted && _isFullScreen) setState(() => _isFullScreen = false);
+  }
+
+  Future<void> _exitFullScreen() async {
     try {
-      final isFull = await windowManager.isFullScreen();
-      if (isFull) {
-        await windowManager.setFullScreen(false);
-        await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-        if (mounted) setState(() => _isFullScreen = false);
-      } else {
-        await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
-        await windowManager.setFullScreen(true);
-        if (mounted) setState(() => _isFullScreen = true);
-      }
+      await windowManager.setFullScreen(false);
+      if (mounted) setState(() => _isFullScreen = false);
     } catch (e) {
-      debugPrint('Fullscreen toggle error: $e');
+      debugPrint('Exit fullscreen error: $e');
+    }
+  }
+
+  Future<void> _enterFullScreen() async {
+    try {
+      await windowManager.setFullScreen(true);
+      if (mounted) setState(() => _isFullScreen = true);
+    } catch (e) {
+      debugPrint('Enter fullscreen error: $e');
+    }
+  }
+
+  Future<void> _toggleFullScreen() async {
+    final isFull = await windowManager.isFullScreen();
+    if (isFull) {
+      await _exitFullScreen();
+    } else {
+      await _enterFullScreen();
     }
   }
 
   @override
   void dispose() {
     _hideTimer?.cancel();
+    _historyTimer?.cancel();
+    _resumeToastTimer?.cancel();
+    windowManager.removeListener(this);
+    _saveWatchProgress();
     _player.dispose();
     if (_isFullScreen) {
       windowManager.setFullScreen(false);
-      windowManager.setTitleBarStyle(TitleBarStyle.normal);
     }
     super.dispose();
   }
@@ -174,12 +250,14 @@ class _InAppPlayerState extends State<InAppPlayer> {
   }
 
   void _switchMedia(MediaItem newItem) {
+    _saveWatchProgress();
     setState(() {
       _currentItem = newItem;
       _showEpisodesDrawer = false;
       _showAudioSubtitlePopover = false;
     });
     widget.onMediaChanged?.call(newItem);
+    _loadResumePosition();
     _startPlayback(newItem.videoPath);
     _onUserActivity();
   }
@@ -304,9 +382,9 @@ class _InAppPlayerState extends State<InAppPlayer> {
         },
         const SingleActivator(LogicalKeyboardKey.escape): () async {
           if (_isFullScreen) {
-            await windowManager.setFullScreen(false);
-            if (mounted) setState(() => _isFullScreen = false);
+            await _exitFullScreen();
           } else {
+            _saveWatchProgress();
             widget.onClose();
           }
         },
@@ -343,6 +421,42 @@ class _InAppPlayerState extends State<InAppPlayer> {
                     ),
                   ),
 
+                  // Resume Position Toast
+                  if (_resumeToastMessage != null)
+                    Positioned(
+                      bottom: 95,
+                      left: 32,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E1E1E).withValues(alpha: 0.95),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFE50914), width: 1.2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.8),
+                              blurRadius: 14,
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.history_rounded, color: Color(0xFFE50914), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              _resumeToastMessage!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
                   // Controls Overlay
                   AnimatedOpacity(
                     duration: const Duration(milliseconds: 250),
@@ -351,34 +465,40 @@ class _InAppPlayerState extends State<InAppPlayer> {
                       ignoring: !_showControls,
                       child: Stack(
                         children: [
-                          // Top Bar
+                          // Top Bar with Custom Window Controls when not in fullscreen
                           Positioned(
                             top: 0,
                             left: 0,
                             right: 0,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [
-                                    Colors.black.withValues(alpha: 0.85),
-                                    Colors.transparent,
-                                  ],
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
-                                    onPressed: () async {
-                                      if (_isFullScreen) {
-                                        await windowManager.setFullScreen(false);
-                                      }
-                                      widget.onClose();
-                                    },
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (!_isFullScreen)
+                                  const CustomAppTitleBar(isTransparent: true),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      colors: [
+                                        Colors.black.withValues(alpha: 0.85),
+                                        Colors.transparent,
+                                      ],
+                                    ),
                                   ),
+                                  child: Row(
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
+                                        onPressed: () async {
+                                          if (_isFullScreen) {
+                                            await _exitFullScreen();
+                                          }
+                                          _saveWatchProgress();
+                                          widget.onClose();
+                                        },
+                                      ),
                               const SizedBox(width: 16),
                               Expanded(
                                 child: Column(
@@ -408,7 +528,9 @@ class _InAppPlayerState extends State<InAppPlayer> {
                             ],
                           ),
                         ),
-                      ),
+                      ],
+                    ),
+                  ),
 
                       // Netflix-Style Audio & Subtitles Popover
                       if (_showAudioSubtitlePopover)
