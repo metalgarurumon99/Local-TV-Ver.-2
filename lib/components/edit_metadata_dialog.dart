@@ -27,6 +27,10 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
 
   bool _isSearchingOnline = false;
   String? _onlineSearchStatus;
+  List<String>? _fetchedCast;
+  String? _fetchedDirector;
+  String? _fetchedBackdropUrl;
+  String? _fetchedLogoUrl;
 
   @override
   void initState() {
@@ -72,7 +76,7 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
 
     setState(() {
       _isSearchingOnline = true;
-      _onlineSearchStatus = 'Mencari di TVMaze & AniList...';
+      _onlineSearchStatus = 'Mencari di TMDB (The Movie Database)...';
     });
 
     try {
@@ -90,6 +94,10 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
           if (result.year != null) {
             _yearController.text = result.year!;
           }
+          _fetchedCast = result.cast;
+          _fetchedDirector = result.director;
+          _fetchedBackdropUrl = result.bannerUrl;
+          _fetchedLogoUrl = result.logoUrl;
           _onlineSearchStatus = 'Ditemukan dari ${result.source}!';
         });
       } else if (mounted) {
@@ -344,10 +352,14 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
                         year: _yearController.text.trim().isNotEmpty
                             ? _yearController.text.trim()
                             : widget.item.year,
+                        cast: _fetchedCast ?? widget.item.cast,
+                        director: _fetchedDirector ?? widget.item.director,
+                        backdropUrl: _fetchedBackdropUrl ?? widget.item.backdropUrl,
+                        logoUrl: _fetchedLogoUrl ?? widget.item.logoUrl,
                         isManualEdit: true,
                       );
                       widget.onSave(updated);
-                      Navigator.of(context).pop();
+                      Navigator.of(context).pop(updated);
                     },
                     icon: const Icon(Icons.check, color: Colors.white, size: 18),
                     label: const Text(

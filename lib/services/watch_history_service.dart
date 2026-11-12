@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'thumbnail_service.dart';
 
 class WatchHistoryEntry {
   final String mediaId;
@@ -10,6 +11,7 @@ class WatchHistoryEntry {
   final String category;
   final bool isSeries;
   final String? episodeId;
+  final int? seasonNumber;
   final int? episodeNumber;
   final String? episodeTitle;
   final int positionMs;
@@ -25,6 +27,7 @@ class WatchHistoryEntry {
     this.category = 'films',
     this.isSeries = false,
     this.episodeId,
+    this.seasonNumber,
     this.episodeNumber,
     this.episodeTitle,
     required this.positionMs,
@@ -51,6 +54,55 @@ class WatchHistoryEntry {
     return 'Sisa $minutes m';
   }
 
+  String get formattedSubtitle {
+    final rem = formattedRemainingTime;
+    if (isSeries) {
+      final s = seasonNumber ?? 1;
+      if (episodeNumber != null) {
+        final epLabel = s > 1 ? 'S$s:E$episodeNumber' : 'E$episodeNumber';
+        return rem.isNotEmpty ? '$epLabel • $rem' : epLabel;
+      }
+      if (episodeTitle != null && episodeTitle!.isNotEmpty) {
+        return rem.isNotEmpty ? '${episodeTitle!} • $rem' : episodeTitle!;
+      }
+    }
+    return rem;
+  }
+
+  WatchHistoryEntry copyWith({
+    String? mediaId,
+    String? mediaTitle,
+    String? videoPath,
+    String? thumbnailPath,
+    String? category,
+    bool? isSeries,
+    String? episodeId,
+    int? seasonNumber,
+    int? episodeNumber,
+    String? episodeTitle,
+    int? positionMs,
+    int? durationMs,
+    DateTime? lastWatchedAt,
+    bool? isCompleted,
+  }) {
+    return WatchHistoryEntry(
+      mediaId: mediaId ?? this.mediaId,
+      mediaTitle: mediaTitle ?? this.mediaTitle,
+      videoPath: videoPath ?? this.videoPath,
+      thumbnailPath: thumbnailPath ?? this.thumbnailPath,
+      category: category ?? this.category,
+      isSeries: isSeries ?? this.isSeries,
+      episodeId: episodeId ?? this.episodeId,
+      seasonNumber: seasonNumber ?? this.seasonNumber,
+      episodeNumber: episodeNumber ?? this.episodeNumber,
+      episodeTitle: episodeTitle ?? this.episodeTitle,
+      positionMs: positionMs ?? this.positionMs,
+      durationMs: durationMs ?? this.durationMs,
+      lastWatchedAt: lastWatchedAt ?? this.lastWatchedAt,
+      isCompleted: isCompleted ?? this.isCompleted,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'mediaId': mediaId,
     'mediaTitle': mediaTitle,
@@ -59,6 +111,7 @@ class WatchHistoryEntry {
     'category': category,
     'isSeries': isSeries,
     'episodeId': episodeId,
+    'seasonNumber': seasonNumber,
     'episodeNumber': episodeNumber,
     'episodeTitle': episodeTitle,
     'positionMs': positionMs,
@@ -75,6 +128,7 @@ class WatchHistoryEntry {
     category: json['category'] as String? ?? 'films',
     isSeries: json['isSeries'] as bool? ?? false,
     episodeId: json['episodeId'] as String?,
+    seasonNumber: (json['seasonNumber'] as num?)?.toInt(),
     episodeNumber: (json['episodeNumber'] as num?)?.toInt(),
     episodeTitle: json['episodeTitle'] as String?,
     positionMs: (json['positionMs'] as num?)?.toInt() ?? 0,
@@ -88,44 +142,212 @@ class WatchHistoryEntry {
 
 class WatchHistoryService {
   static const String _cacheFileName = 'watch_history.json';
+  static List<WatchHistoryEntry>? _memoryEntries;
+
+  static Directory _resolveAppDirectory(String relativeName) {
+    final direct = Directory(relativeName);
+    if (direct.existsSync()) return direct;
+
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final resolved = Directory('$exeDir${Platform.pathSeparator}$relativeName');
+      if (resolved.existsSync()) return resolved;
+      if (!kDebugMode) return resolved;
+    } catch (_) {}
+
+    return direct;
+  }
 
   static File _getHistoryFile() {
-    final cacheDir = Directory('.cache');
+    final cacheDir = _resolveAppDirectory('.cache');
     if (!cacheDir.existsSync()) {
       cacheDir.createSync(recursive: true);
     }
-    return File('.cache/$_cacheFileName');
+    return File('${cacheDir.path}${Platform.pathSeparator}$_cacheFileName');
   }
 
-  /// Get all watch history entries ordered by last watched descending
+  /// Compute a canonical grouping key so 1 Series only ever occupies 1 slot
+  /// in "Lanjutkan Menonton" (even for legacy per-episode entries).
+  static String _seriesSlotKey(WatchHistoryEntry entry) {
+    if (entry.isSeries && entry.videoPath.isNotEmpty) {
+      try {
+        final parentPath = File(entry.videoPath).parent.path.toLowerCase();
+        if (parentPath.isNotEmpty) {
+          return 'series-dir:$parentPath';
+        }
+      } catch (_) {}
+    }
+    return 'id:${entry.mediaId}';
+  }
+
+  static List<WatchHistoryEntry> _deduplicateBySeries(List<WatchHistoryEntry> sortedEntries) {
+    final Set<String> seenSlotKeys = {};
+    final Set<String> seenMediaIds = {};
+    final List<WatchHistoryEntry> deduplicated = [];
+
+    for (final entry in sortedEntries) {
+      final slotKey = _seriesSlotKey(entry);
+      if (seenSlotKeys.contains(slotKey) || seenMediaIds.contains(entry.mediaId)) {
+        continue;
+      }
+      seenSlotKeys.add(slotKey);
+      seenMediaIds.add(entry.mediaId);
+      deduplicated.add(entry);
+    }
+    return deduplicated;
+  }
+
+  /// Get all watch history entries ordered by last watched descending (1 slot per series)
   static Future<List<WatchHistoryEntry>> getRecentHistory({int limit = 30}) async {
     try {
-      final file = _getHistoryFile();
-      if (!await file.exists()) return [];
+      if (_memoryEntries != null) {
+        final valid = _deduplicateBySeries(
+          _memoryEntries!
+              .where((e) => LocalThumbnailService.fileExistsCached(e.videoPath))
+              .toList(),
+        );
+        if (valid.length > limit) {
+          return valid.sublist(0, limit);
+        }
+        return valid;
+      }
 
-      final content = await file.readAsString();
-      if (content.trim().isEmpty) return [];
+      final file = _getHistoryFile();
+      if (!await file.exists()) {
+        _memoryEntries = [];
+        return [];
+      }
+
+      String content = await file.readAsString();
+      content = content.replaceAll('\u0000', '').trim();
+      if (content.isEmpty) {
+        _memoryEntries = [];
+        return [];
+      }
 
       final List<dynamic> list = jsonDecode(content);
-      final entries = list
+      final rawEntries = list
           .map((item) => WatchHistoryEntry.fromJson(item as Map<String, dynamic>))
-          .where((e) => File(e.videoPath).existsSync()) // verify file still exists
+          .where((e) => LocalThumbnailService.fileExistsCached(e.videoPath))
           .toList();
 
-      entries.sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
+      rawEntries.sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
+      final entries = _deduplicateBySeries(rawEntries);
+      _memoryEntries = entries;
+
+      // If legacy duplicate entries were cleaned up, persist the cleaned list
+      if (entries.length != rawEntries.length) {
+        await _writeHistoryFile(entries);
+      }
+
       if (entries.length > limit) {
         return entries.sublist(0, limit);
       }
-      return entries;
+      return List<WatchHistoryEntry>.from(entries);
     } catch (e) {
       debugPrint('Error reading watch history: $e');
+      _memoryEntries = [];
+      try {
+        final file = _getHistoryFile();
+        if (await file.exists()) {
+          await _writeHistoryFile([]);
+        }
+      } catch (_) {}
       return [];
     }
   }
 
-  /// Get specific progress for an item
-  static Future<WatchHistoryEntry?> getProgress(String mediaId, {String? episodeId}) async {
-    final all = await getRecentHistory();
+  /// Write entries safely to disk using atomic rename to prevent corruption or null bytes
+  static Future<void> _writeHistoryFile(List<WatchHistoryEntry> entries) async {
+    try {
+      final file = _getHistoryFile();
+      final tempFile = File('${file.path}.tmp');
+      final jsonStr = jsonEncode(entries.map((e) => e.toJson()).toList());
+      await tempFile.writeAsString(jsonStr, flush: true);
+      if (await tempFile.exists()) {
+        if (await file.exists()) await file.delete();
+        await tempFile.rename(file.path);
+      }
+    } catch (e) {
+      debugPrint('Error writing watch history: $e');
+    }
+  }
+
+  /// Remove history entries for videos whose folders are no longer connected
+  static Future<void> pruneDisconnectedHistory(List<String> connectedFolders) async {
+    try {
+      if (connectedFolders.isEmpty) {
+        await clearHistory();
+        return;
+      }
+      final all = await getRecentHistory(limit: 100);
+      final normFolders = connectedFolders
+          .map((f) => f.replaceAll('/', '\\').toLowerCase().trim())
+          .where((f) => f.isNotEmpty)
+          .toList();
+
+      final beforeCount = all.length;
+      all.removeWhere((e) {
+        final np = e.videoPath.replaceAll('/', '\\').toLowerCase().trim();
+        return !normFolders.any((f) => np.startsWith(f));
+      });
+
+      if (all.length != beforeCount) {
+        _memoryEntries = all;
+        await _writeHistoryFile(all);
+      }
+    } catch (e) {
+      debugPrint('Error pruning disconnected history: $e');
+    }
+  }
+
+  /// Synchronize in-memory entries with catalog-normalized entries from BrowseScreen
+  static void updateMemoryEntries(List<WatchHistoryEntry> entries) {
+    _memoryEntries = List<WatchHistoryEntry>.from(entries);
+  }
+
+  /// Synchronous zero-allocation memory lookup for UI scroll rendering (VideoCard & HeroBillboard)
+  static WatchHistoryEntry? getProgressSync(
+    String mediaId, {
+    String? episodeId,
+    String? videoPath,
+  }) {
+    final entries = _memoryEntries;
+    if (entries == null || entries.isEmpty) return null;
+    if (videoPath != null && videoPath.isNotEmpty) {
+      for (final entry in entries) {
+        if (entry.videoPath == videoPath) return entry;
+      }
+      return null;
+    }
+    for (final entry in entries) {
+      if (entry.mediaId == mediaId) {
+        if (episodeId == null || entry.episodeId == episodeId) {
+          return entry;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Get specific progress for an item / video file
+  static Future<WatchHistoryEntry?> getProgress(
+    String mediaId, {
+    String? episodeId,
+    String? videoPath,
+  }) async {
+    final all = await getRecentHistory(limit: 50);
+    if (videoPath != null && videoPath.isNotEmpty) {
+      for (final entry in all) {
+        if (entry.videoPath == videoPath) {
+          return entry;
+        }
+      }
+      // If a specific videoPath was requested (e.g., an episode of a series)
+      // and the stored entry is for a DIFFERENT episode of that series,
+      // do not return the other episode's timestamp.
+      return null;
+    }
     for (final entry in all) {
       if (entry.mediaId == mediaId) {
         if (episodeId == null || entry.episodeId == episodeId) {
@@ -136,7 +358,7 @@ class WatchHistoryService {
     return null;
   }
 
-  /// Save or update watching progress
+  /// Save or update watching progress (replaces any existing slot for the same series)
   static Future<void> saveProgress({
     required String mediaId,
     required String mediaTitle,
@@ -145,6 +367,7 @@ class WatchHistoryService {
     String category = 'films',
     bool isSeries = false,
     String? episodeId,
+    int? seasonNumber,
     int? episodeNumber,
     String? episodeTitle,
     required int positionMs,
@@ -155,19 +378,9 @@ class WatchHistoryService {
         return; // don't save if video just started (< 2s)
       }
 
-      final file = _getHistoryFile();
-      List<WatchHistoryEntry> currentEntries = [];
-      if (await file.exists()) {
-        try {
-          final content = await file.readAsString();
-          if (content.trim().isNotEmpty) {
-            final List<dynamic> list = jsonDecode(content);
-            currentEntries = list
-                .map((it) => WatchHistoryEntry.fromJson(it as Map<String, dynamic>))
-                .toList();
-          }
-        } catch (_) {}
-      }
+      List<WatchHistoryEntry> currentEntries = _memoryEntries != null
+          ? List<WatchHistoryEntry>.from(_memoryEntries!)
+          : await getRecentHistory(limit: 50);
 
       final bool isCompleted = durationMs > 0 && (positionMs / durationMs) >= 0.95;
 
@@ -179,6 +392,7 @@ class WatchHistoryService {
         category: category,
         isSeries: isSeries,
         episodeId: episodeId,
+        seasonNumber: seasonNumber,
         episodeNumber: episodeNumber,
         episodeTitle: episodeTitle,
         positionMs: positionMs,
@@ -187,33 +401,48 @@ class WatchHistoryService {
         isCompleted: isCompleted,
       );
 
-      // Remove existing entry for the same media
-      currentEntries.removeWhere((it) => it.mediaId == mediaId);
-
-      // Insert at the front
+      final newSlotKey = _seriesSlotKey(updatedEntry);
+      currentEntries.removeWhere(
+        (it) =>
+            it.mediaId == mediaId ||
+            it.videoPath == videoPath ||
+            _seriesSlotKey(it) == newSlotKey,
+      );
       currentEntries.insert(0, updatedEntry);
 
-      // Keep max 50 items
       if (currentEntries.length > 50) {
         currentEntries = currentEntries.sublist(0, 50);
       }
 
-      await file.writeAsString(
-        jsonEncode(currentEntries.map((e) => e.toJson()).toList()),
-      );
+      _memoryEntries = currentEntries;
+      await _writeHistoryFile(currentEntries);
     } catch (e) {
       debugPrint('Error saving watch history: $e');
     }
   }
 
-  /// Remove single media from history
-  static Future<void> removeEntry(String mediaId) async {
+  /// Remove single media or series from history
+  static Future<void> removeEntry(String mediaId, {String? videoPath}) async {
     try {
-      final file = _getHistoryFile();
-      if (!await file.exists()) return;
-      final all = await getRecentHistory();
-      all.removeWhere((e) => e.mediaId == mediaId);
-      await file.writeAsString(jsonEncode(all.map((e) => e.toJson()).toList()));
+      final all = await getRecentHistory(limit: 50);
+      String? targetDir;
+      if (videoPath != null && videoPath.isNotEmpty) {
+        try {
+          targetDir = File(videoPath).parent.path.toLowerCase();
+        } catch (_) {}
+      }
+      all.removeWhere((e) {
+        if (e.mediaId == mediaId) return true;
+        if (videoPath != null && e.videoPath == videoPath) return true;
+        if (targetDir != null && e.isSeries) {
+          try {
+            return File(e.videoPath).parent.path.toLowerCase() == targetDir;
+          } catch (_) {}
+        }
+        return false;
+      });
+      _memoryEntries = all;
+      await _writeHistoryFile(all);
     } catch (e) {
       debugPrint('Error removing history entry: $e');
     }
@@ -222,6 +451,7 @@ class WatchHistoryService {
   /// Clear all history
   static Future<void> clearHistory() async {
     try {
+      _memoryEntries = [];
       final file = _getHistoryFile();
       if (await file.exists()) {
         await file.delete();

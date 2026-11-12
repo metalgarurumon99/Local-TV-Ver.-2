@@ -62,61 +62,8 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/
-    - assets/videos/
-    - assets/images/misc/
     - assets/images/users/
     - assets/images/icons/
-    - assets/images/films/children/despicable-me/
-    - assets/images/films/children/frozen/
-    - assets/images/films/children/hotel-transylvania/
-    - assets/images/films/children/spirited-away/
-    - assets/images/films/children/up/
-    - assets/images/films/drama/fight-club/
-    - assets/images/films/drama/kings-speech/
-    - assets/images/films/drama/the-prestige/
-    - assets/images/films/drama/the-revenant/
-    - assets/images/films/drama/the-social-network/
-    - assets/images/films/romance/a-star-is-born/
-    - assets/images/films/romance/blue-valentine/
-    - assets/images/films/romance/la-la-land/
-    - assets/images/films/romance/the-notebook/
-    - assets/images/films/romance/titanic/
-    - assets/images/films/suspense/gone-girl/
-    - assets/images/films/suspense/prisoners/
-    - assets/images/films/suspense/seven/
-    - assets/images/films/suspense/shutter-island/
-    - assets/images/films/suspense/zodiac/
-    - assets/images/films/thriller/a-quiet-place/
-    - assets/images/films/thriller/black-swan/
-    - assets/images/films/thriller/joker/
-    - assets/images/films/thriller/nightcrawler/
-    - assets/images/films/thriller/the-silence-of-the-lambs/
-    - assets/images/series/children/arthur/
-    - assets/images/series/children/dora-the-explorer/
-    - assets/images/series/children/paw-patrol/
-    - assets/images/series/children/peppa-pig/
-    - assets/images/series/children/spongebob/
-    - assets/images/series/comedies/arrested-development/
-    - assets/images/series/comedies/curb-your-enthusiasm/
-    - assets/images/series/comedies/family-guy/
-    - assets/images/series/comedies/south-park/
-    - assets/images/series/comedies/the-office/
-    - assets/images/series/crime/long-shot/
-    - assets/images/series/crime/making-a-murderer/
-    - assets/images/series/crime/the-confession-killer/
-    - assets/images/series/crime/the-innocent-man/
-    - assets/images/series/crime/the-staircase/
-    - assets/images/series/documentaries/amanda-knox/
-    - assets/images/series/documentaries/citizenfour/
-    - assets/images/series/documentaries/man-on-wire/
-    - assets/images/series/documentaries/super-size-me/
-    - assets/images/series/documentaries/tiger-king/
-    - assets/images/series/feel-good/forrest-gump/
-    - assets/images/series/feel-good/good-will-hunting/
-    - assets/images/series/feel-good/juno/
-    - assets/images/series/feel-good/midnight-in-paris/
-    - assets/images/series/feel-good/school-of-rock/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

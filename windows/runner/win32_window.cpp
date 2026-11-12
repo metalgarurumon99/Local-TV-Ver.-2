@@ -7,6 +7,11 @@
 
 namespace {
 
+/// Disables DWM window transition animations for instant fullscreen switches.
+#ifndef DWMWA_TRANSITIONS_FORCEDISABLED
+#define DWMWA_TRANSITIONS_FORCEDISABLED 3
+#endif
+
 /// Window attribute that enables dark mode window decorations.
 ///
 /// Redefined in case the developer's machine has a Windows SDK older than
@@ -135,7 +140,7 @@ bool Win32Window::Create(const std::wstring& title,
   double scale_factor = dpi / 96.0;
 
   HWND window = CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
+      window_class, title.c_str(), WS_OVERLAPPEDWINDOW | WS_MAXIMIZE,
       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
       nullptr, nullptr, GetModuleHandle(nullptr), this);
@@ -150,7 +155,7 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  return ShowWindow(window_handle_, SW_SHOWMAXIMIZED);
 }
 
 // static
@@ -199,10 +204,27 @@ Win32Window::MessageHandler(HWND hwnd,
     }
     case WM_SIZE: {
       RECT rect = GetClientArea();
-      if (child_content_ != nullptr) {
-        // Size and position the child window.
-        MoveWindow(child_content_, rect.left, rect.top, rect.right - rect.left,
-                   rect.bottom - rect.top, TRUE);
+      LONG width = rect.right - rect.left;
+      LONG height = rect.bottom - rect.top;
+      if (width > 0 && height > 0 && child_content_ != nullptr) {
+        // Ignore transient oversized rect during two-step SetFullScreen(true)
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitor_info{};
+        monitor_info.cbSize = sizeof(MONITORINFO);
+        if (GetMonitorInfo(monitor, &monitor_info)) {
+          LONG mon_width =
+              monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
+          if (width > mon_width) {
+            return 0;
+          }
+        }
+        RECT child_rect{};
+        GetClientRect(child_content_, &child_rect);
+        if ((child_rect.right - child_rect.left) != width ||
+            (child_rect.bottom - child_rect.top) != height) {
+          // Size and position the child window.
+          MoveWindow(child_content_, rect.left, rect.top, width, height, TRUE);
+        }
       }
       return 0;
     }
@@ -273,6 +295,10 @@ void Win32Window::OnDestroy() {
 }
 
 void Win32Window::UpdateTheme(HWND const window) {
+  BOOL disable_transitions = FALSE;
+  DwmSetWindowAttribute(window, DWMWA_TRANSITIONS_FORCEDISABLED,
+                        &disable_transitions, sizeof(disable_transitions));
+
   DWORD light_mode;
   DWORD light_mode_size = sizeof(light_mode);
   LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
