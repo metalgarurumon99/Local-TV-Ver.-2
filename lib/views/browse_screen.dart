@@ -19,6 +19,8 @@ import '../components/in_app_player.dart';
 import '../components/item_detail_dialog.dart';
 import '../components/video_card.dart';
 import '../components/edit_metadata_dialog.dart';
+import '../utils/media_ui_helpers.dart';
+import 'catalog_browse_view.dart';
 import 'settings_view.dart';
 
 class BrowseScreen extends StatefulWidget {
@@ -53,20 +55,24 @@ class _BrowseScreenState extends State<BrowseScreen> {
   List<MediaItem> _localItems = [];
   List<WatchHistoryEntry> _watchHistory = [];
   bool _isScanningFolders = false;
+  int _scanGeneration = 0;
   final ValueNotifier<String?> _scanStatusNotifier = ValueNotifier<String?>(null);
 
   // Memoized catalog data to avoid recomputing on every frame
   List<MapEntry<String, List<MediaItem>>> _cachedGroupEntries = [];
   List<MediaItem> _cachedFeaturedCandidates = [];
+  final int _sessionShuffleSeed = DateTime.now().microsecondsSinceEpoch;
 
   // Scroll controller for the main catalog
   final ScrollController _catalogScrollController = ScrollController();
 
   // Active modal dialog item (rendered directly in BrowseScreen Stack to avoid Navigator DialogRoute frame freeze)
   MediaItem? _activeDetailItem;
+  List<MediaItem> _cachedSimilarItems = const [];
   int _featuredIndex = 0;
   final ValueNotifier<bool> _isHeroVisibleNotifier = ValueNotifier<bool>(true);
   Timer? _featuredRotationTimer;
+  Timer? _searchDebounceTimer;
 
   @override
   void initState() {
@@ -123,8 +129,10 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   @override
   void dispose() {
+    LocalLibraryService.stopWatchingFolders();
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
     _featuredRotationTimer?.cancel();
+    _searchDebounceTimer?.cancel();
     _catalogScrollController.removeListener(_onCatalogScroll);
     _catalogScrollController.dispose();
     _isHeroVisibleNotifier.dispose();
@@ -138,7 +146,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (event is! KeyDownEvent) return false;
 
     // Do not intercept keyboard shortcuts if full-screen video is playing or detail dialog is active
-    if (_currentlyPlaying != null || _activeDetailItem != null) return false;
+    if ((_currentlyPlaying != null && !_isMiniplayer) || _activeDetailItem != null) return false;
 
     final isCtrlPressed = HardwareKeyboard.instance.isControlPressed;
     // Ctrl + F or F3: toggle / open search
@@ -229,6 +237,18 @@ class _BrowseScreenState extends State<BrowseScreen> {
           }
           if (matchedEp != null || item.id == entry.mediaId) {
             final ep = matchedEp ?? item.episodes.first;
+            final regularEps = item.episodes.where((e) => e.season != 0).toList();
+            final lastEp = regularEps.isNotEmpty ? regularEps.last : item.episodes.last;
+            final bool isLastEpisode = ep.id == lastEp.id || ep.videoPath == lastEp.videoPath;
+            final bool isFinished = entry.isCompleted || entry.progress >= 0.95;
+
+            if (isFinished && isLastEpisode) {
+              // Series finished to the end: remove from "Lanjutkan Menonton"
+              WatchHistoryService.removeEntry(item.id, videoPath: entry.videoPath);
+              normalized = null;
+              break;
+            }
+
             normalized = entry.copyWith(
               mediaId: item.id,
               mediaTitle: item.title,
@@ -244,6 +264,13 @@ class _BrowseScreenState extends State<BrowseScreen> {
             break;
           }
         } else if (item.id == entry.mediaId || item.videoPath == entry.videoPath) {
+          final bool isFinished = entry.isCompleted || entry.progress >= 0.95;
+          if (isFinished) {
+            // Movie finished: remove from "Lanjutkan Menonton"
+            WatchHistoryService.removeEntry(item.id, videoPath: entry.videoPath);
+            normalized = null;
+            break;
+          }
           normalized = entry.copyWith(
             mediaId: item.id,
             mediaTitle: item.title,
@@ -333,7 +360,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       if (mounted) {
         setState(() {
           _connectedFolders = folders;
-          if (forceFullRescan || _localItems.isEmpty) {
+          if (forceFullRescan || _localItems.isEmpty || cached.length != _localItems.length) {
             _localItems = cached;
             _watchHistory = _normalizeHistoryWithCatalog(_watchHistory, _localItems);
             _recomputeCatalogGroups();
@@ -347,6 +374,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
 
     if (_connectedFolders.isNotEmpty) {
+      LocalLibraryService.startWatchingFolders(_connectedFolders, () {
+        if (mounted && !_isScanningFolders) {
+          _runBackgroundScan(forceFullRescan: false);
+        }
+      });
       if (!forceFullRescan && _localItems.isNotEmpty) {
         // Defer lightweight diff check slightly so startup animations and initial scroll are 100% untouched
         await Future.delayed(const Duration(milliseconds: 1200));
@@ -354,8 +386,10 @@ class _BrowseScreenState extends State<BrowseScreen> {
       }
       _runBackgroundScan(forceFullRescan: forceFullRescan);
     } else if (mounted) {
+      LocalLibraryService.stopWatchingFolders();
       LocalLibraryService.cancelScan();
       final configuredFolders = await LocalLibraryService.getAllConfiguredFolders();
+      if (!mounted) return;
       if (configuredFolders.isEmpty) {
         setState(() {
           _connectedFolders = [];
@@ -377,24 +411,55 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
   }
 
-  Future<void> _runBackgroundScan({bool forceFullRescan = false}) async {
-    if (_isScanningFolders && !forceFullRescan) return;
+  /// Incrementally scan ONLY a newly added folder without touching or rescanning existing folders.
+  Future<void> _scanAddedFolder(String folderPath) async {
+    final folders = await LocalLibraryService.getConnectedFolders();
+    if (!mounted) return;
+    setState(() {
+      _connectedFolders = folders;
+    });
+    if (_connectedFolders.isNotEmpty) {
+      LocalLibraryService.startWatchingFolders(_connectedFolders, () {
+        if (mounted && !_isScanningFolders) {
+          _runBackgroundScan(forceFullRescan: false);
+        }
+      });
+    }
+    await _runBackgroundScan(
+      forceFullRescan: false,
+      onlyFolders: [folderPath],
+    );
+  }
 
-    final bool showToast = forceFullRescan || _localItems.isEmpty;
+  Future<void> _runBackgroundScan({
+    bool forceFullRescan = false,
+    List<String>? onlyFolders,
+  }) async {
+    final bool isIncrementalNewFolder = onlyFolders != null && onlyFolders.isNotEmpty;
+    if (_isScanningFolders && !forceFullRescan && !isIncrementalNewFolder) return;
+    if ((forceFullRescan || isIncrementalNewFolder) && _isScanningFolders) {
+      LocalLibraryService.cancelScan();
+    }
+    final int myGen = ++_scanGeneration;
+
+    final bool showToast = forceFullRescan || isIncrementalNewFolder || _localItems.isEmpty;
     if (mounted && showToast) {
       setState(() {
         _isScanningFolders = true;
       });
-      _scanStatusNotifier.value = 'Memeriksa folder & video...';
+      _scanStatusNotifier.value = isIncrementalNewFolder
+          ? 'Memindai folder baru...'
+          : 'Memeriksa folder & video...';
     }
 
     try {
       final items = await LocalLibraryService.scanAllFolders(
         fetchOnlineMetadata: true,
-        extractThumbnails: forceFullRescan,
-        quickDiffCheck: !forceFullRescan && _localItems.isNotEmpty,
+        extractThumbnails: forceFullRescan || isIncrementalNewFolder,
+        quickDiffCheck: !forceFullRescan && !isIncrementalNewFolder && _localItems.isNotEmpty,
+        onlyFolders: onlyFolders,
         onProgress: (msg) {
-          if (mounted) {
+          if (mounted && myGen == _scanGeneration) {
             if (!_isScanningFolders) {
               setState(() => _isScanningFolders = true);
             }
@@ -402,7 +467,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
           }
         },
         onItemReady: (progressiveItems, readyItem) {
-          if (!mounted) return;
+          if (!mounted || myGen != _scanGeneration) return;
           if (progressiveItems.length != _localItems.length ||
               !_sameItemIds(progressiveItems, _localItems)) {
             setState(() {
@@ -414,9 +479,10 @@ class _BrowseScreenState extends State<BrowseScreen> {
         },
       );
 
-      if (mounted) {
+      if (mounted && myGen == _scanGeneration) {
         final activeFolders = await LocalLibraryService.getConnectedFolders();
         final configuredFolders = await LocalLibraryService.getAllConfiguredFolders();
+        if (!mounted || myGen != _scanGeneration) return;
         if (activeFolders.isEmpty && configuredFolders.isEmpty) {
           setState(() {
             _connectedFolders = [];
@@ -445,7 +511,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       }
     } catch (e) {
       debugPrint('Background sync error: $e');
-      if (mounted) {
+      if (mounted && myGen == _scanGeneration) {
         setState(() {
           _isScanningFolders = false;
         });
@@ -473,24 +539,24 @@ class _BrowseScreenState extends State<BrowseScreen> {
         item: item,
         onSave: (updatedItem) async {
           await LocalLibraryService.saveCustomMetadata(updatedItem.id, updatedItem);
+          if (!mounted) return;
           setState(() {
-            final idx = _localItems.indexWhere((it) => it.id == updatedItem.id || it.title == updatedItem.title);
+            final idx = _localItems.indexWhere((it) => it.id == updatedItem.id);
             if (idx != -1) {
               _localItems[idx] = updatedItem;
             } else {
               _localItems.add(updatedItem);
             }
+            _watchHistory = _normalizeHistoryWithCatalog(_watchHistory, _localItems);
             _recomputeCatalogGroups();
           });
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                backgroundColor: const Color(0xFFE50914),
-                content: Text('Informasi "${updatedItem.title}" berhasil disimpan!'),
-                duration: const Duration(seconds: 3),
-              ),
-            );
-          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFFE50914),
+              content: Text('Informasi "${updatedItem.title}" berhasil disimpan!'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
         },
       ),
     );
@@ -508,8 +574,8 @@ class _BrowseScreenState extends State<BrowseScreen> {
         source = List<MediaItem>.from(_localItems);
       }
     }
-    if (source.isEmpty) {
-      source = [];
+    if (source.length > 1) {
+      source.shuffle(math.Random(_sessionShuffleSeed));
     }
     _cachedFeaturedCandidates = source.take(8).toList();
 
@@ -614,62 +680,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   void _playSpecificEpisode(MediaItem parentItem, Episode episode) {
     PreviewPlayerService.instance.suspendAll();
-    final playlist = parentItem.episodes.map((ep) {
-      final epDesc = (ep.synopsis != null && ep.synopsis!.isNotEmpty)
-          ? ep.synopsis!
-          : parentItem.description;
-      final epThumb = ep.thumbnail ?? parentItem.customThumbnail;
-      final epLabel = ep.title.isNotEmpty ? ep.title : 'Episode ${ep.episodeNumber}';
-
-      return MediaItem(
-        id: ep.id,
-        title: '${parentItem.title} - $epLabel',
-        description: epDesc,
-        genre: parentItem.genre,
-        maturity: parentItem.maturity,
-        category: parentItem.category,
-        videoPath: ep.videoPath,
-        customThumbnail: epThumb,
-        year: parentItem.year,
-        rating: parentItem.rating,
-        isSeries: true,
-        episodes: parentItem.episodes,
-        seriesId: parentItem.id,
-        seriesTitle: parentItem.title,
-        seasonNumber: ep.season,
-        episodeNumber: ep.episodeNumber,
-        episodeTitle: ep.title,
-        backdropUrl: parentItem.backdropUrl,
-        logoUrl: parentItem.logoUrl,
-      );
-    }).toList();
-
-    final targetDesc = (episode.synopsis != null && episode.synopsis!.isNotEmpty)
-        ? episode.synopsis!
-        : parentItem.description;
-    final targetThumb = episode.thumbnail ?? parentItem.customThumbnail;
-    final targetLabel = episode.title.isNotEmpty ? episode.title : 'Episode ${episode.episodeNumber}';
-
-    final playItem = MediaItem(
-      id: episode.id,
-      title: '${parentItem.title} - $targetLabel',
-      description: targetDesc,
-      genre: parentItem.genre,
-      maturity: parentItem.maturity,
-      category: parentItem.category,
-      videoPath: episode.videoPath,
-      customThumbnail: targetThumb,
-      year: parentItem.year,
-      rating: parentItem.rating,
-      isSeries: true,
-      episodes: parentItem.episodes,
-      seriesId: parentItem.id,
-      seriesTitle: parentItem.title,
-      seasonNumber: episode.season,
-      episodeNumber: episode.episodeNumber,
-      episodeTitle: episode.title,
-      backdropUrl: parentItem.backdropUrl,
-      logoUrl: parentItem.logoUrl,
+    final playlist = parentItem.episodes
+        .map((ep) => MediaUiHelpers.buildEpisodeMediaItem(parent: parentItem, episode: ep))
+        .toList();
+    final playItem = playlist.firstWhere(
+      (it) => it.id == episode.id && it.videoPath == episode.videoPath,
+      orElse: () => MediaUiHelpers.buildEpisodeMediaItem(parent: parentItem, episode: episode),
     );
 
     setState(() {
@@ -714,6 +730,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (mounted) {
       setState(() {
         _activeDetailItem = item;
+        _cachedSimilarItems = _getSimilarItems(item);
       });
     }
   }
@@ -725,6 +742,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     if (mounted && _activeDetailItem != null) {
       setState(() {
         _activeDetailItem = null;
+        _cachedSimilarItems = const [];
       });
     }
   }
@@ -737,10 +755,17 @@ class _BrowseScreenState extends State<BrowseScreen> {
         allowedExtensions: ['mp4', 'mkv', 'avi', 'mov', 'webm', 'ts', 'm4v'],
       );
 
+      if (!mounted) return;
       if (files.isNotEmpty && files.first.path != null) {
         final filePath = files.first.path!;
         final fileName = files.first.name;
         final cleanTitle = LocalLibraryService.cleanVideoTitle(fileName);
+
+        final existingIdx = _localItems.indexWhere((it) => it.videoPath == filePath);
+        if (existingIdx != -1) {
+          _playMedia(_localItems[existingIdx]);
+          return;
+        }
 
         final localItem = MediaItem(
           id: 'single-${DateTime.now().millisecondsSinceEpoch}',
@@ -753,10 +778,8 @@ class _BrowseScreenState extends State<BrowseScreen> {
         );
 
         setState(() {
-          if (!_localItems.any((it) => it.videoPath == filePath)) {
-            _localItems.insert(0, localItem);
-            _recomputeCatalogGroups();
-          }
+          _localItems.insert(0, localItem);
+          _recomputeCatalogGroups();
         });
 
         _playMedia(localItem);
@@ -851,9 +874,20 @@ class _BrowseScreenState extends State<BrowseScreen> {
                           contentPadding: EdgeInsets.zero,
                         ),
                         onChanged: (query) {
-                          setState(() {
-                            _searchQuery = query;
-                            _recomputeCatalogGroups();
+                          _searchDebounceTimer?.cancel();
+                          if (query.trim().isEmpty) {
+                            setState(() {
+                              _searchQuery = '';
+                              _recomputeCatalogGroups();
+                            });
+                            return;
+                          }
+                          _searchDebounceTimer = Timer(const Duration(milliseconds: 180), () {
+                            if (!mounted) return;
+                            setState(() {
+                              _searchQuery = query;
+                              _recomputeCatalogGroups();
+                            });
                           });
                         },
                       ),
@@ -968,6 +1002,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
   Widget build(BuildContext context) {
     final featured = _featuredItem;
     final bool isPlaying = _currentlyPlaying != null;
+    final bool isFullScreenPlaying = isPlaying && !_isMiniplayer;
     final bool isDetailOpen = _activeDetailItem != null;
     final bool showHero = _searchQuery.trim().length < 2 && featured != null && _localItems.isNotEmpty;
 
@@ -997,9 +1032,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
         children: [
           // Layer 0: Persistent Catalog View (preserves scroll position & avoids unmount stutter)
           IgnorePointer(
-            ignoring: isPlaying || isDetailOpen,
+            ignoring: isFullScreenPlaying || isDetailOpen,
             child: ExcludeFocus(
-              excluding: isPlaying || isDetailOpen,
+              excluding: isFullScreenPlaying || isDetailOpen,
               child: Scaffold(
                 backgroundColor: const Color(0xFF111111),
                 body: Column(
@@ -1009,8 +1044,13 @@ class _BrowseScreenState extends State<BrowseScreen> {
                         activeCategory: _activeCategory,
                         isScanning: _isScanningFolders,
                         onCategoryChanged: (cat) {
+                          _searchDebounceTimer?.cancel();
+                          _searchController.clear();
+                          _searchFocusNode.unfocus();
+                          VideoCard.closeActivePopover();
                           setState(() {
                             _activeCategory = cat;
+                            _isSearchOpen = false;
                             _searchQuery = '';
                             _featuredIndex = 0;
                             _recomputeCatalogGroups();
@@ -1018,7 +1058,12 @@ class _BrowseScreenState extends State<BrowseScreen> {
                           if (cat == 'settings') {
                             PreviewPlayerService.instance.suspendAll();
                             _featuredRotationTimer?.cancel();
+                          } else if (cat == 'browse') {
+                            PreviewPlayerService.instance.stopAll();
+                            PreviewPlayerService.instance.resumeFromSuspension();
+                            _featuredRotationTimer?.cancel();
                           } else {
+                            PreviewPlayerService.instance.resumeFromSuspension();
                             _startFeaturedRotation();
                           }
                         },
@@ -1027,7 +1072,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
                     ),
                     Expanded(
                       child: IndexedStack(
-                        index: _activeCategory == 'settings' ? 1 : 0,
+                        index: _activeCategory == 'settings'
+                            ? 2
+                            : (_activeCategory == 'browse' ? 1 : 0),
                         children: [
                           // 0: Virtualized Scrollable Content Catalog with Clean Clamping Physics (Home)
                           Stack(
@@ -1050,7 +1097,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                                             featured,
                                             connectedFolders: _connectedFolders,
                                           ),
-                                          isActive: !isPlaying && !isDetailOpen && _activeCategory != 'settings',
+                                          isActive: !isPlaying && !isDetailOpen && _activeCategory == 'all',
                                           isVisibleNotifier: _isHeroVisibleNotifier,
                                           onPlay: () => _playMedia(featured),
                                           onMoreInfo: () => _showItemDetails(featured),
@@ -1164,8 +1211,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
                                           ),
                                         );
                                       }
+                                      final bool isSearchRow = _searchQuery.trim().length >= 2;
                                       return ContentRow(
-                                        key: ValueKey<String>('row-${entry.key}'),
+                                        key: ValueKey<String>(isSearchRow ? 'row-search-results' : 'row-${entry.key}'),
                                         title: entry.key,
                                         items: entry.value,
                                         connectedFolders: _connectedFolders,
@@ -1242,12 +1290,28 @@ class _BrowseScreenState extends State<BrowseScreen> {
                       ],
                     ),
 
-                    // 1: Full-Page Settings View (Dedicated Page)
-                    SettingsView(
-                      onLibraryUpdated: () => _loadInitialLibrary(forceFullRescan: true),
-                      onPickLocalFile: _pickLocalFile,
-                      onSyncLibrary: () => _loadInitialLibrary(forceFullRescan: true),
-                    ),
+                    // 1: Dedicated Browse View with Filter & Sort (Mounted when active)
+                    if (_activeCategory == 'browse')
+                      CatalogBrowseView(
+                        items: _localItems,
+                        connectedFolders: _connectedFolders,
+                        onPlay: _playMedia,
+                        onSelect: _showItemDetails,
+                        onEdit: _openEditMetadataDialog,
+                      )
+                    else
+                      const SizedBox.shrink(),
+
+                    // 2: Full-Page Settings View (Mounted only when active to prevent hidden rebuilds)
+                    if (_activeCategory == 'settings')
+                      SettingsView(
+                        onLibraryUpdated: () => _loadInitialLibrary(forceFullRescan: false),
+                        onFolderAdded: _scanAddedFolder,
+                        onPickLocalFile: _pickLocalFile,
+                        onSyncLibrary: () => _loadInitialLibrary(forceFullRescan: true),
+                      )
+                    else
+                      const SizedBox.shrink(),
                   ],
                 ),
               ),
@@ -1258,7 +1322,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
           ),
 
           // Layer 0.5: Dedicated Expanded Card Popover Layer (independent of Navigator Overlay)
-          if (!isPlaying && !isDetailOpen)
+          if (!isFullScreenPlaying && !isDetailOpen)
             ValueListenableBuilder<Widget?>(
               valueListenable: VideoCard.activePopoverNotifier,
               builder: (context, popover, _) {
@@ -1286,7 +1350,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             ),
 
           // Layer 0.8: Direct In-Tree ItemDetailDialog Overlay (100% unified close behavior for X, Outside Click, and ESC)
-          if (!isPlaying && isDetailOpen)
+          if (!isFullScreenPlaying && isDetailOpen)
             Positioned.fill(
               child: ItemDetailDialog(
                 key: ValueKey<String>('detail-dialog-${_activeDetailItem!.id}'),
@@ -1295,7 +1359,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                   _activeDetailItem!,
                   connectedFolders: _connectedFolders,
                 ),
-                similarItems: _getSimilarItems(_activeDetailItem!),
+                similarItems: _cachedSimilarItems,
                 onClose: _closeItemDetails,
                 onPlay: () {
                   final itemToPlay = _activeDetailItem!;
@@ -1309,7 +1373,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                 },
                 onItemUpdated: (updatedItem) {
                   setState(() {
-                    final idx = _localItems.indexWhere((it) => it.id == updatedItem.id || it.title == updatedItem.title);
+                    final idx = _localItems.indexWhere((it) => it.id == updatedItem.id);
                     if (idx != -1) {
                       _localItems[idx] = updatedItem;
                     } else {
@@ -1318,6 +1382,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                     if (_activeDetailItem?.id == updatedItem.id) {
                       _activeDetailItem = updatedItem;
                     }
+                    _watchHistory = _normalizeHistoryWithCatalog(_watchHistory, _localItems);
                     _recomputeCatalogGroups();
                   });
                 },
@@ -1360,33 +1425,14 @@ class _BrowseScreenState extends State<BrowseScreen> {
                       final newSeriesId = newItem.seriesId ?? newItem.id;
                       if (currentSeriesId != newSeriesId) {
                         final sTitle = newItem.seriesTitle ?? newItem.title.split(' - ').first;
-                        _currentPlayingPlaylist = newItem.episodes.map((ep) {
-                          final epDesc = (ep.synopsis != null && ep.synopsis!.isNotEmpty)
-                              ? ep.synopsis!
-                              : newItem.description;
-                          final epThumb = ep.thumbnail ?? newItem.customThumbnail;
-                          return MediaItem(
-                            id: ep.id,
-                            title: '$sTitle - ${ep.title.isNotEmpty ? ep.title : "Episode ${ep.episodeNumber}"}',
-                            description: epDesc,
-                            genre: newItem.genre,
-                            maturity: newItem.maturity,
-                            category: newItem.category,
-                            videoPath: ep.videoPath,
-                            customThumbnail: epThumb,
-                            year: newItem.year,
-                            rating: newItem.rating,
-                            isSeries: true,
-                            episodes: newItem.episodes,
-                            seriesId: newSeriesId,
-                            seriesTitle: sTitle,
-                            seasonNumber: ep.season,
-                            episodeNumber: ep.episodeNumber,
-                            episodeTitle: ep.title,
-                            backdropUrl: newItem.backdropUrl,
-                            logoUrl: newItem.logoUrl,
-                          );
-                        }).toList();
+                        _currentPlayingPlaylist = newItem.episodes
+                            .map((ep) => MediaUiHelpers.buildEpisodeMediaItem(
+                                  parent: newItem,
+                                  episode: ep,
+                                  seriesTitleOverride: sTitle,
+                                  seriesIdOverride: newSeriesId,
+                                ))
+                            .toList();
                       }
                     } else {
                       _currentPlayingPlaylist = [newItem];

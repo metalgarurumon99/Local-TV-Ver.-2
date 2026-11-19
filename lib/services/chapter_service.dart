@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'thumbnail_service.dart';
 
@@ -24,16 +23,6 @@ class VideoChapter {
         t.contains('ncop');
   }
 
-  bool get isEnding {
-    final t = title.toLowerCase().trim();
-    return t.contains('ending') ||
-        t.contains('credit') ||
-        t == 'ed' ||
-        t.startsWith('ed ') ||
-        t.endsWith(' ed') ||
-        t.contains('nced');
-  }
-
   @override
   String toString() => 'VideoChapter(title: $title, start: $start, end: $end)';
 }
@@ -43,6 +32,7 @@ class ChapterService {
   static final ChapterService instance = ChapterService._();
 
   static final Map<String, List<VideoChapter>> _cache = {};
+  static final Map<String, Future<List<VideoChapter>>> _inFlight = {};
 
   /// Extract embedded chapter markers from video file using fast ffmpeg container inspection
   Future<List<VideoChapter>> getChapters(String videoPath) async {
@@ -50,14 +40,30 @@ class ChapterService {
     if (_cache.containsKey(videoPath)) {
       return _cache[videoPath]!;
     }
+    final existing = _inFlight[videoPath];
+    if (existing != null) return existing;
 
+    final future = _extractChapters(videoPath);
+    _inFlight[videoPath] = future;
+    try {
+      return await future;
+    } finally {
+      _inFlight.remove(videoPath);
+    }
+  }
+
+  Future<List<VideoChapter>> _extractChapters(String videoPath) async {
     final ffmpegExec = await LocalThumbnailService.getFfmpegExecutable();
     if (ffmpegExec == null) return [];
 
     try {
-      final res = await Process.run(ffmpegExec, ['-i', videoPath]);
-      final output = res.stderr.toString();
-      final chapters = parseChaptersFromFfmpegOutput(output);
+      final res = await LocalThumbnailService.runFfmpegWithTimeout(
+        ffmpegExec,
+        ['-i', videoPath],
+        timeout: const Duration(seconds: 15),
+      );
+      if (res == null) return [];
+      final chapters = parseChaptersFromFfmpegOutput(res.stderr);
       _cache[videoPath] = chapters;
       return chapters;
     } catch (e) {
@@ -75,31 +81,47 @@ class ChapterService {
     String? currentTitle;
 
     final startEndRegex = RegExp(r'Chapter #\d+:\d+: start ([\d.]+), end ([\d.]+)');
-    final titleRegex = RegExp(r'title\s*:\s*(.+)');
+    final titleRegex = RegExp(r'^title\s*:\s*(.+)');
+
+    void flushCurrent() {
+      if (currentStart != null && currentEnd != null) {
+        result.add(
+          VideoChapter(
+            title: currentTitle ?? 'Chapter ${result.length + 1}',
+            start: currentStart!,
+            end: currentEnd!,
+          ),
+        );
+      }
+      currentStart = null;
+      currentEnd = null;
+      currentTitle = null;
+    }
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i].trim();
       final match = startEndRegex.firstMatch(line);
       if (match != null) {
-        if (currentStart != null && currentEnd != null) {
-          result.add(
-            VideoChapter(
-              title: currentTitle ?? 'Chapter ${result.length + 1}',
-              start: currentStart,
-              end: currentEnd,
-            ),
-          );
-        }
+        flushCurrent();
 
         final startSec = double.tryParse(match.group(1)!) ?? 0.0;
         final endSec = double.tryParse(match.group(2)!) ?? 0.0;
         currentStart = Duration(milliseconds: (startSec * 1000).toInt());
         currentEnd = Duration(milliseconds: (endSec * 1000).toInt());
-        currentTitle = null;
         continue;
       }
 
-      if (currentStart != null) {
+      // Stop reading chapter metadata once ffmpeg moves on to Stream/Program/Output sections
+      if (currentStart != null &&
+          (line.startsWith('Stream #') ||
+              line.startsWith('Program ') ||
+              line.startsWith('Output #') ||
+              line.startsWith('At least one output'))) {
+        flushCurrent();
+        continue;
+      }
+
+      if (currentStart != null && currentTitle == null) {
         final tMatch = titleRegex.firstMatch(line);
         if (tMatch != null) {
           currentTitle = tMatch.group(1)!.trim();
@@ -107,16 +129,7 @@ class ChapterService {
       }
     }
 
-    if (currentStart != null && currentEnd != null) {
-      result.add(
-        VideoChapter(
-          title: currentTitle ?? 'Chapter ${result.length + 1}',
-          start: currentStart,
-          end: currentEnd,
-        ),
-      );
-    }
-
+    flushCurrent();
     return result;
   }
 }

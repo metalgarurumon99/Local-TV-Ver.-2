@@ -27,13 +27,8 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
-
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
+  // Let window_manager control initial Show/Maximize deterministically via
+  // waitUntilReadyToShow() to prevent SW_SHOWMAXIMIZED vs SetWindowPos(1280x720) race conditions.
   flutter_controller_->ForceRedraw();
 
   return true;

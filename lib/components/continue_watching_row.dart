@@ -4,6 +4,8 @@ import '../services/library_service.dart';
 import '../services/preview_player_service.dart';
 import '../services/thumbnail_service.dart';
 import '../services/watch_history_service.dart';
+import '../utils/media_ui_helpers.dart';
+import 'video_card.dart';
 
 class ContinueWatchingRow extends StatefulWidget {
   final List<WatchHistoryEntry> items;
@@ -58,6 +60,7 @@ class _ContinueWatchingRowState extends State<ContinueWatchingRow> {
   void _onScroll() {
     if (!_scrollController.hasClients) return;
     _savedOffset = _scrollController.offset;
+    VideoCard.closeActivePopover();
     PreviewPlayerService.instance.notifyScrollActivity();
     _updateScrollButtons();
   }
@@ -76,7 +79,7 @@ class _ContinueWatchingRowState extends State<ContinueWatchingRow> {
 
   void _scrollLeft() {
     if (!_scrollController.hasClients) return;
-    final target = (_scrollController.offset - 756.0).clamp(
+    final target = (_scrollController.offset - 762.0).clamp(
       0.0,
       _scrollController.position.maxScrollExtent,
     );
@@ -89,7 +92,7 @@ class _ContinueWatchingRowState extends State<ContinueWatchingRow> {
 
   void _scrollRight() {
     if (!_scrollController.hasClients) return;
-    final target = (_scrollController.offset + 756.0).clamp(
+    final target = (_scrollController.offset + 762.0).clamp(
       0.0,
       _scrollController.position.maxScrollExtent,
     );
@@ -297,20 +300,8 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
   }
 
   String _buildContinueWatchingSubtitle() {
-    final remMs = widget.entry.durationMs - widget.entry.positionMs;
-    String remainingText = '';
-    if (remMs <= 0) {
-      remainingText = 'Selesai';
-    } else {
-      final totalMinutes = (remMs / (1000 * 60)).round();
-      if (totalMinutes >= 60) {
-        final hours = totalMinutes ~/ 60;
-        final minutes = totalMinutes % 60;
-        remainingText = minutes > 0 ? 'Sisa $hours j $minutes m' : 'Sisa $hours jam';
-      } else {
-        remainingText = 'Sisa $totalMinutes menit';
-      }
-    }
+    final rem = widget.entry.formattedRemainingTime;
+    final remainingText = rem.isEmpty ? 'Selesai' : rem;
 
     if (widget.entry.isSeries && widget.entry.episodeNumber != null) {
       return 'Episode ${widget.entry.episodeNumber} • $remainingText';
@@ -333,25 +324,7 @@ class _ContinueWatchingCardState extends State<_ContinueWatchingCard> {
         child: GestureDetector(
           onTap: () {
             if (!isConnected) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  backgroundColor: const Color(0xFF222222),
-                  behavior: SnackBarBehavior.floating,
-                  duration: const Duration(seconds: 4),
-                  content: Row(
-                    children: [
-                      const Icon(Icons.cloud_off_rounded, color: Color(0xFFE50914), size: 20),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Folder penyimpanan untuk "${widget.entry.mediaTitle}" sedang tidak terhubung. Sambungkan drive atau periksa folder di Pengaturan.',
-                          style: const TextStyle(color: Colors.white, fontSize: 13),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
+              MediaUiHelpers.showDisconnectedStorageSnackBar(context, widget.entry.mediaTitle);
               return;
             }
             widget.onResume();

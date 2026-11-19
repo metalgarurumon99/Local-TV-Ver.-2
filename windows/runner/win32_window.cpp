@@ -155,7 +155,7 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWMAXIMIZED);
+  return ShowWindow(window_handle_, SW_SHOWNORMAL);
 }
 
 // static
@@ -207,24 +207,9 @@ Win32Window::MessageHandler(HWND hwnd,
       LONG width = rect.right - rect.left;
       LONG height = rect.bottom - rect.top;
       if (width > 0 && height > 0 && child_content_ != nullptr) {
-        // Ignore transient oversized rect during two-step SetFullScreen(true)
-        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO monitor_info{};
-        monitor_info.cbSize = sizeof(MONITORINFO);
-        if (GetMonitorInfo(monitor, &monitor_info)) {
-          LONG mon_width =
-              monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
-          if (width > mon_width) {
-            return 0;
-          }
-        }
-        RECT child_rect{};
-        GetClientRect(child_content_, &child_rect);
-        if ((child_rect.right - child_rect.left) != width ||
-            (child_rect.bottom - child_rect.top) != height) {
-          // Size and position the child window.
-          MoveWindow(child_content_, rect.left, rect.top, width, height, TRUE);
-        }
+        // Size and position the child window to always match the client area
+        // (including maximized TitleBarStyle.hidden frames where DWM adds border insets).
+        MoveWindow(child_content_, rect.left, rect.top, width, height, TRUE);
       }
       return 0;
     }

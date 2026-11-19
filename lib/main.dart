@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 import 'models/media_item.dart';
+import 'services/app_settings_service.dart';
 import 'services/library_service.dart';
 import 'services/thumbnail_service.dart';
 import 'services/watch_history_service.dart';
@@ -20,41 +21,24 @@ void main() async {
   MediaKit.ensureInitialized();
 
   // Initialize WindowManager & preload cached library in parallel for 0ms seamless startup
-  final results = await Future.wait<dynamic>([
-    windowManager.ensureInitialized(),
-    LocalThumbnailService.init(),
-    LocalLibraryService.getConnectedFolders(),
-    LocalLibraryService.getCachedItems(),
-    WatchHistoryService.getRecentHistory(),
-  ]);
+  await windowManager.ensureInitialized();
 
-  final List<String> initialFolders = results[2] as List<String>;
-  final List<MediaItem> initialItems = results[3] as List<MediaItem>;
-  final List<WatchHistoryEntry> initialHistory = results[4] as List<WatchHistoryEntry>;
-
-  // Pre-warm file existence cache for local poster, backdrop, logo, and video thumbnails
-  for (final item in initialItems) {
-    if (item.customThumbnail != null &&
-        item.customThumbnail!.isNotEmpty &&
-        !item.isNetworkImage) {
-      LocalThumbnailService.fileExistsCached(item.customThumbnail);
-    }
-    if (item.backdropUrl != null &&
-        item.backdropUrl!.isNotEmpty &&
-        !item.backdropUrl!.startsWith('http')) {
-      LocalThumbnailService.fileExistsCached(item.backdropUrl);
-    }
-    if (item.logoUrl != null &&
-        item.logoUrl!.isNotEmpty &&
-        !item.logoUrl!.startsWith('http')) {
-      LocalThumbnailService.fileExistsCached(item.logoUrl);
-    }
-    final vPath = item.videoPath.isNotEmpty
-        ? item.videoPath
-        : (item.episodes.isNotEmpty ? item.episodes.first.videoPath : '');
-    if (vPath.isNotEmpty) {
-      LocalThumbnailService.hasThumbnail(vPath);
-    }
+  List<String> initialFolders = const [];
+  List<MediaItem> initialItems = const [];
+  List<WatchHistoryEntry> initialHistory = const [];
+  try {
+    final results = await Future.wait<dynamic>([
+      AppSettingsService.instance.init(),
+      LocalThumbnailService.init(),
+      LocalLibraryService.getConnectedFolders(),
+      LocalLibraryService.getCachedItems(),
+      WatchHistoryService.getRecentHistory(),
+    ]);
+    initialFolders = results[2] as List<String>;
+    initialItems = results[3] as List<MediaItem>;
+    initialHistory = results[4] as List<WatchHistoryEntry>;
+  } catch (e) {
+    debugPrint('Startup preload error (continuing with empty state): $e');
   }
 
   const windowOptions = WindowOptions(
@@ -75,15 +59,41 @@ void main() async {
     ),
   );
 
-  // Self-healing maintenance in background (no delay to UI startup)
-  unawaited(Future.microtask(() async {
-    await LocalLibraryService.cleanOrphanedCache();
-  }));
-
+  // Configure window bounds/style while hidden, then show -> maximize -> focus deterministically
   windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.maximize();
     await windowManager.show();
+    await windowManager.maximize();
     await windowManager.focus();
+  });
+
+  // Defer file existence pre-warm & orphan cleanup until after the first frame renders (0ms startup block)
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 250), () async {
+      for (final item in initialItems) {
+        if (item.customThumbnail != null &&
+            item.customThumbnail!.isNotEmpty &&
+            !item.isNetworkImage) {
+          LocalThumbnailService.fileExistsCached(item.customThumbnail);
+        }
+        if (item.backdropUrl != null &&
+            item.backdropUrl!.isNotEmpty &&
+            !item.backdropUrl!.startsWith('http')) {
+          LocalThumbnailService.fileExistsCached(item.backdropUrl);
+        }
+        if (item.logoUrl != null &&
+            item.logoUrl!.isNotEmpty &&
+            !item.logoUrl!.startsWith('http')) {
+          LocalThumbnailService.fileExistsCached(item.logoUrl);
+        }
+        final vPath = item.videoPath.isNotEmpty
+            ? item.videoPath
+            : (item.episodes.isNotEmpty ? item.episodes.first.videoPath : '');
+        if (vPath.isNotEmpty) {
+          LocalThumbnailService.hasThumbnail(vPath);
+        }
+      }
+      await LocalLibraryService.cleanOrphanedCache();
+    }));
   });
 }
 

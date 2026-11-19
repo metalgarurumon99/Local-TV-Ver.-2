@@ -1,8 +1,22 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:media_kit/media_kit.dart';
+
+class FfmpegRunResult {
+  final int exitCode;
+  final String stdout;
+  final String stderr;
+  const FfmpegRunResult(this.exitCode, this.stdout, this.stderr);
+}
+
+class _QueuedExtraction {
+  final Future<void> Function() run;
+  final void Function() cancel;
+  _QueuedExtraction(this.run, this.cancel);
+}
 
 class LocalThumbnailService {
   static Directory _resolveAppDirectory(String relativeName) {
@@ -19,29 +33,71 @@ class LocalThumbnailService {
     return direct;
   }
 
-  static Directory get _thumbDir => _resolveAppDirectory('.cache/thumbnails');
-  static Directory get _posterDir => _resolveAppDirectory('.cache/posters');
-  static Directory get _logoDir => _resolveAppDirectory('.cache/logos');
+  static Directory? _cachedThumbDir;
+  static Directory? _cachedPosterDir;
+  static Directory? _cachedLogoDir;
+
+  static Directory get _thumbDir => _cachedThumbDir ??= _resolveAppDirectory('.cache/thumbnails');
+  static Directory get _posterDir => _cachedPosterDir ??= _resolveAppDirectory('.cache/posters');
+  static Directory get _logoDir => _cachedLogoDir ??= _resolveAppDirectory('.cache/logos');
   static bool _dirsInitialized = false;
+
+  /// Run ffmpeg with a hard timeout, killing the child process if it hangs.
+  static Future<FfmpegRunResult?> runFfmpegWithTimeout(
+    String executable,
+    List<String> args, {
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    Process? process;
+    try {
+      process = await Process.start(executable, args);
+      final stdoutFuture = process.stdout.transform(utf8.decoder).join();
+      final stderrFuture = process.stderr.transform(utf8.decoder).join();
+      final exitCode = await process.exitCode.timeout(timeout);
+      final out = await stdoutFuture;
+      final err = await stderrFuture;
+      return FfmpegRunResult(exitCode, out, err);
+    } on TimeoutException {
+      debugPrint('ffmpeg timed out after ${timeout.inSeconds}s, killing process');
+      try {
+        process?.kill(ProcessSignal.sigkill);
+      } catch (_) {}
+      return null;
+    } catch (e) {
+      debugPrint('ffmpeg process error: $e');
+      try {
+        process?.kill();
+      } catch (_) {}
+      return null;
+    }
+  }
 
   /// In-memory cache of file existence checks to avoid synchronous disk I/O
   /// (`File.existsSync()`) inside widget `build()` methods during scrolling.
   static final Map<String, bool> _fileExistsCache = <String, bool>{};
   static final Map<String, Future<String?>> _inFlight = <String, Future<String?>>{};
-  static final List<Future<void> Function()> _extractionQueue = [];
+  static final List<_QueuedExtraction> _extractionQueue = [];
   static bool _isProcessingExtractionQueue = false;
 
   /// Enqueue an ffmpeg extraction job to prevent concurrent disk I/O thrashing.
-  static Future<T> _enqueueExtraction<T>(Future<T> Function() job) {
-    final completer = Completer<T>();
-    _extractionQueue.add(() async {
-      try {
-        final result = await job();
-        completer.complete(result);
-      } catch (e, st) {
-        completer.completeError(e, st);
-      }
-    });
+  static Future<T?> _enqueueExtraction<T>(Future<T?> Function() job) {
+    final completer = Completer<T?>();
+    _extractionQueue.add(
+      _QueuedExtraction(
+        () async {
+          if (completer.isCompleted) return;
+          try {
+            final result = await job();
+            if (!completer.isCompleted) completer.complete(result);
+          } catch (e, st) {
+            if (!completer.isCompleted) completer.completeError(e, st);
+          }
+        },
+        () {
+          if (!completer.isCompleted) completer.complete(null);
+        },
+      ),
+    );
     _drainExtractionQueue();
     return completer.future;
   }
@@ -52,15 +108,20 @@ class LocalThumbnailService {
     while (_extractionQueue.isNotEmpty) {
       final job = _extractionQueue.removeAt(0);
       try {
-        await job();
+        await job.run();
       } catch (_) {}
     }
     _isProcessingExtractionQueue = false;
   }
 
-  /// Cancel all pending extraction jobs when leaving a dialog/screen
+  /// Cancel all pending extraction jobs when leaving a dialog/screen,
+  /// completing their futures with null so callers and `_inFlight` never leak.
   static void cancelPendingExtractions() {
+    final pending = List<_QueuedExtraction>.from(_extractionQueue);
     _extractionQueue.clear();
+    for (final item in pending) {
+      item.cancel();
+    }
   }
 
   /// Fast cached check whether a local file exists.
@@ -259,7 +320,7 @@ class LocalThumbnailService {
     final ffmpegExec = await getFfmpegExecutable();
     if (ffmpegExec != null) {
       try {
-        final res = await Process.run(ffmpegExec, [
+        final res = await runFfmpegWithTimeout(ffmpegExec, [
           '-ss',
           '00:00:40',
           '-i',
@@ -273,13 +334,13 @@ class LocalThumbnailService {
           outPath,
           '-y',
         ]);
-        if (res.exitCode == 0 && await outFile.exists() && await outFile.length() > 0) {
+        if (res != null && res.exitCode == 0 && await outFile.exists() && await outFile.length() > 0) {
           markFileExists(outPath, true);
           return outPath;
         }
 
         // Retry at 10s if 40s was beyond duration or failed
-        final retry = await Process.run(ffmpegExec, [
+        final retry = await runFfmpegWithTimeout(ffmpegExec, [
           '-ss',
           '00:00:10',
           '-i',
@@ -293,7 +354,7 @@ class LocalThumbnailService {
           outPath,
           '-y',
         ]);
-        if (retry.exitCode == 0 && await outFile.exists() && await outFile.length() > 0) {
+        if (retry != null && retry.exitCode == 0 && await outFile.exists() && await outFile.length() > 0) {
           markFileExists(outPath, true);
           return outPath;
         }
@@ -307,13 +368,13 @@ class LocalThumbnailService {
       return null;
     }
 
+    Player? player;
     try {
-      final player = Player();
+      player = Player();
       await player.open(Media(videoPath), play: false);
       await player.seek(const Duration(seconds: 40));
       await Future.delayed(const Duration(milliseconds: 250));
       final bytes = await player.screenshot(format: 'image/jpeg');
-      await player.dispose();
 
       if (bytes != null && bytes.isNotEmpty) {
         await outFile.writeAsBytes(bytes);
@@ -322,6 +383,8 @@ class LocalThumbnailService {
       }
     } catch (e) {
       debugPrint('MediaKit screenshot extraction failed: $e');
+    } finally {
+      await player?.dispose();
     }
 
     return null;

@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'thumbnail_service.dart';
 
@@ -12,6 +15,7 @@ class TrickplayData {
   final double tileWidth;
   final double tileHeight;
   final Duration totalDuration;
+  final double intervalSec;
   ui.Image? decodedImage;
 
   TrickplayData({
@@ -21,16 +25,26 @@ class TrickplayData {
     this.tileWidth = 160.0,
     this.tileHeight = 90.0,
     required this.totalDuration,
+    double? intervalSec,
     this.decodedImage,
-  }) : totalTiles = cols * rows;
+  })  : totalTiles = cols * rows,
+        intervalSec = intervalSec ??
+            (totalDuration.inSeconds > 0
+                ? math.max(0.2, totalDuration.inSeconds / (cols * rows))
+                : 1.0);
 
   Rect getTileRect(Duration position) {
     if (totalDuration.inMilliseconds <= 0 || totalTiles <= 0) return Rect.zero;
-    final fraction = (position.inMilliseconds / totalDuration.inMilliseconds).clamp(0.0, 0.9999);
-    final index = (fraction * totalTiles).floor().clamp(0, totalTiles - 1);
+    final double posSec = (position.inMilliseconds / 1000.0).clamp(0.0, totalDuration.inMilliseconds / 1000.0);
+    final int index = (posSec / intervalSec).floor().clamp(0, totalTiles - 1);
     final col = index % cols;
     final row = index ~/ cols;
     return Rect.fromLTWH(col * tileWidth, row * tileHeight, tileWidth, tileHeight);
+  }
+
+  void dispose() {
+    decodedImage?.dispose();
+    decodedImage = null;
   }
 }
 
@@ -38,18 +52,41 @@ class TrickplayService {
   TrickplayService._();
   static final TrickplayService instance = TrickplayService._();
 
-  static final Map<String, TrickplayData> _memoryCache = {};
+  static const int _maxCachedSprites = 6;
+  static final LinkedHashMap<String, TrickplayData> _memoryCache = LinkedHashMap<String, TrickplayData>();
   static final Map<String, Future<TrickplayData?>> _inFlight = {};
+  static Directory? _cachedTrickplayDir;
 
   static Directory get _trickplayDir {
+    if (_cachedTrickplayDir != null) return _cachedTrickplayDir!;
     final direct = Directory('.cache/trickplay');
-    if (direct.existsSync()) return direct;
+    if (direct.existsSync()) {
+      _cachedTrickplayDir = direct;
+      return direct;
+    }
     try {
       final exeDir = File(Platform.resolvedExecutable).parent.path;
       final resolved = Directory('$exeDir${Platform.pathSeparator}.cache${Platform.pathSeparator}trickplay');
-      if (resolved.existsSync()) return resolved;
+      if (resolved.existsSync() || !kDebugMode) {
+        _cachedTrickplayDir = resolved;
+        return resolved;
+      }
     } catch (_) {}
+    _cachedTrickplayDir = direct;
     return direct;
+  }
+
+  static void _putInCache(String key, TrickplayData data) {
+    final existing = _memoryCache.remove(key);
+    if (existing != null && !identical(existing, data)) {
+      existing.dispose();
+    }
+    _memoryCache[key] = data;
+    while (_memoryCache.length > _maxCachedSprites) {
+      final oldestKey = _memoryCache.keys.first;
+      final evicted = _memoryCache.remove(oldestKey);
+      evicted?.dispose();
+    }
   }
 
   static String _getSpritePath(String videoPath) {
@@ -64,10 +101,10 @@ class TrickplayService {
     }
 
     if (_memoryCache.containsKey(videoPath)) {
-      final cached = _memoryCache[videoPath]!;
+      final cached = _memoryCache.remove(videoPath)!;
+      _memoryCache[videoPath] = cached; // Mark as most recently used
       if (cached.decodedImage != null) return cached;
-      // Load decoded image if needed
-      if (File(cached.imagePath).existsSync()) {
+      if (await File(cached.imagePath).exists()) {
         cached.decodedImage = await _decodeImageFile(File(cached.imagePath));
         return cached;
       }
@@ -81,7 +118,7 @@ class TrickplayService {
     try {
       final res = await future;
       if (res != null) {
-        _memoryCache[videoPath] = res;
+        _putInCache(videoPath, res);
       }
       return res;
     } finally {
@@ -91,7 +128,7 @@ class TrickplayService {
 
   Future<TrickplayData?> _processTrickplay(String videoPath, Duration duration) async {
     try {
-      if (!_trickplayDir.existsSync()) {
+      if (!await _trickplayDir.exists()) {
         await _trickplayDir.create(recursive: true);
       }
 
@@ -101,16 +138,16 @@ class TrickplayService {
       const int cols = 10;
       const int rows = 10;
       const int totalFrames = cols * rows;
+      // Cover the entire video duration cleanly (minimum 0.2s interval for short clips, no 60s upper cap for >100min movies)
+      final double intervalSec = math.max(0.2, duration.inSeconds / totalFrames);
 
-      if (!outFile.existsSync() || (await outFile.length()) == 0) {
+      if (!await outFile.exists() || (await outFile.length()) == 0) {
         final ffmpeg = await LocalThumbnailService.getFfmpegExecutable();
         if (ffmpeg == null) return null;
 
-        // Calculate sample interval in seconds so totalFrames covers the entire duration
-        final double intervalSec = (duration.inSeconds / totalFrames).clamp(1.0, 60.0);
         final fpsArg = 'fps=1/$intervalSec,scale=160:90,tile=${cols}x$rows';
 
-        final res = await Process.run(
+        final res = await LocalThumbnailService.runFfmpegWithTimeout(
           ffmpeg,
           [
             '-skip_frame', 'nokey',
@@ -121,10 +158,11 @@ class TrickplayService {
             outPath,
             '-y',
           ],
+          timeout: const Duration(seconds: 60),
         );
 
-        if (res.exitCode != 0 || !outFile.existsSync() || (await outFile.length()) == 0) {
-          debugPrint('Trickplay ffmpeg failed: ${res.stderr}');
+        if (res == null || res.exitCode != 0 || !await outFile.exists() || (await outFile.length()) == 0) {
+          debugPrint('Trickplay ffmpeg failed: ${res?.stderr ?? "timeout"}');
           return null;
         }
       }
@@ -132,17 +170,16 @@ class TrickplayService {
       final decoded = await _decodeImageFile(outFile);
       if (decoded == null) return null;
 
-      final data = TrickplayData(
+      return TrickplayData(
         imagePath: outPath,
         cols: cols,
         rows: rows,
         tileWidth: 160.0,
         tileHeight: 90.0,
         totalDuration: duration,
+        intervalSec: intervalSec,
         decodedImage: decoded,
       );
-
-      return data;
     } catch (e) {
       debugPrint('Trickplay error: $e');
       return null;

@@ -20,55 +20,33 @@ class PreviewPlayerService extends ChangeNotifier {
   PreviewPlayerService._();
   static final PreviewPlayerService instance = PreviewPlayerService._();
 
-  static Directory _resolveAppDirectory(String relativeName) {
-    final direct = Directory(relativeName);
-    if (direct.existsSync()) return direct;
-
-    try {
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-      final resolved = Directory('$exeDir${Platform.pathSeparator}$relativeName');
-      if (resolved.existsSync()) return resolved;
-      if (!kDebugMode) return resolved;
-    } catch (_) {}
-
-    return direct;
-  }
-
-  static Directory get _previewCacheDir => _resolveAppDirectory('.cache/previews');
-
   Player? _player;
   VideoController? _controller;
   bool _engineConfigured = false;
 
   String? _activeOwnerId;
-  String? _activeVideoPath;
   bool _isFrameReady = false;
   bool _isMuted = false;
   double _volume = 50.0;
+  final ValueNotifier<({double volume, bool isMuted})> volumeStateNotifier =
+      ValueNotifier<({double volume, bool isMuted})>((volume: 50.0, isMuted: false));
   bool _isSuspended = false;
 
   Timer? _autoStopTimer;
   Timer? _scrollCooldownTimer;
+  StreamSubscription<Duration>? _frameSub;
   bool _isScrolling = false;
   int _scrollGeneration = 0;
   int _requestToken = 0;
 
   String? get activeOwnerId => _activeOwnerId;
-  String? get activeVideoPath => _activeVideoPath;
   VideoController? get controller => _controller;
   bool get isMuted => _isMuted;
   double get volume => _volume;
   int get scrollGeneration => _scrollGeneration;
 
-  bool isOwnerActive(String ownerId) => !_isSuspended && _activeOwnerId == ownerId;
   bool isOwnerReady(String ownerId) =>
       !_isSuspended && _activeOwnerId == ownerId && _isFrameReady && _controller != null;
-
-  /// Path to the cached 12-second micro-preview `.mp4` for a given video file
-  static String getCachedPreviewPath(String videoPath) {
-    final hash = videoPath.toLowerCase().hashCode.abs();
-    return '${_previewCacheDir.path}${Platform.pathSeparator}preview_$hash.mp4';
-  }
 
   /// Lazily initialize the single shared hardware-accelerated preview player
   Future<void> _ensureEngine() async {
@@ -146,20 +124,29 @@ class PreviewPlayerService extends ChangeNotifier {
 
     final int token = ++_requestToken;
     _autoStopTimer?.cancel();
+    _frameSub?.cancel();
+    _frameSub = null;
+
+    bool isSuperseded() => token != _requestToken || _isSuspended || _activeOwnerId != ownerId;
+    void stopOnlyIfNoNewOwner() {
+      // Only stop the shared player if no newer owner has taken over
+      if (_activeOwnerId == null || _isSuspended) {
+        try {
+          _player?.setVolume(0.0);
+          _player?.stop();
+        } catch (_) {}
+      }
+    }
 
     final double targetVolume = (allowAudio && !_isMuted) ? _volume : 0.0;
 
     _activeOwnerId = ownerId;
-    _activeVideoPath = videoPath;
     _isFrameReady = false;
     notifyListeners();
 
     await _ensureEngine();
-    if (token != _requestToken || _isSuspended || _activeOwnerId != ownerId) {
-      try {
-        _player?.setVolume(0.0);
-        _player?.stop();
-      } catch (_) {}
+    if (isSuperseded()) {
+      stopOnlyIfNoNewOwner();
       return;
     }
 
@@ -179,24 +166,24 @@ class PreviewPlayerService extends ChangeNotifier {
     try {
       await player.setVolume(0.0);
     } catch (_) {}
-    if (token != _requestToken || _isSuspended || _activeOwnerId != ownerId) {
-      player.stop();
+    if (isSuperseded()) {
+      stopOnlyIfNoNewOwner();
       return;
     }
 
     // Continuous loop mode so preview video doesn't cut to a black box
     await player.setPlaylistMode(PlaylistMode.loop);
-    if (token != _requestToken || _isSuspended || _activeOwnerId != ownerId) {
-      player.stop();
+    if (isSuperseded()) {
+      stopOnlyIfNoNewOwner();
       return;
     }
 
     // Open in PAUSED mode (play: false). Never starts audio or unpauses until validated!
     await player.open(Media(finalSource), play: false);
 
-    // If cancelled or released while opening, stop immediately and NEVER play
-    if (token != _requestToken || _isSuspended || _activeOwnerId != ownerId) {
-      player.stop();
+    // If cancelled or released while opening, stop only if no newer owner took over
+    if (isSuperseded()) {
+      stopOnlyIfNoNewOwner();
       return;
     }
 
@@ -205,28 +192,27 @@ class PreviewPlayerService extends ChangeNotifier {
     await player.play();
     DebugLogger.log('requestPreview PLAYING: ownerId=$ownerId, vol=$targetVolume');
 
-    if (token != _requestToken || _isSuspended || _activeOwnerId != ownerId) {
-      player.setVolume(0.0);
-      player.stop();
+    if (isSuperseded()) {
+      stopOnlyIfNoNewOwner();
       return;
     }
 
     // Wait until the new video actually begins playing frames before making it visible
-    StreamSubscription? frameSub;
     void onFrameStarted() {
-      if (token == _requestToken && !_isSuspended && _activeOwnerId == ownerId) {
+      _frameSub?.cancel();
+      _frameSub = null;
+      if (!isSuperseded()) {
         if (!_isFrameReady) {
           _isFrameReady = true;
           notifyListeners();
         }
       } else {
-        player.setVolume(0.0);
-        player.stop();
+        stopOnlyIfNoNewOwner();
       }
-      frameSub?.cancel();
     }
 
-    frameSub = player.stream.position.listen((pos) {
+    _frameSub?.cancel();
+    _frameSub = player.stream.position.listen((pos) {
       if (pos > Duration.zero) {
         onFrameStarted();
       }
@@ -262,8 +248,9 @@ class PreviewPlayerService extends ChangeNotifier {
     DebugLogger.log('stopAll CALLED: previousOwner=$_activeOwnerId');
     _requestToken++;
     _autoStopTimer?.cancel();
+    _frameSub?.cancel();
+    _frameSub = null;
     _activeOwnerId = null;
-    _activeVideoPath = null;
     _isFrameReady = false;
     try {
       _player?.setVolume(0.0);
@@ -277,11 +264,15 @@ class PreviewPlayerService extends ChangeNotifier {
     _isSuspended = true;
     _requestToken++;
     _autoStopTimer?.cancel();
+    _frameSub?.cancel();
+    _frameSub = null;
     final bool hadOwner = _activeOwnerId != null || _isFrameReady;
     _activeOwnerId = null;
-    _activeVideoPath = null;
     _isFrameReady = false;
-    _player?.stop();
+    try {
+      _player?.setVolume(0.0);
+      _player?.stop();
+    } catch (_) {}
     if (hadOwner) {
       notifyListeners();
     }
@@ -294,21 +285,21 @@ class PreviewPlayerService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Set preview volume (0.0 to 100.0) without any UI lag
+  /// Set preview volume (0.0 to 100.0) without triggering full Video layer rebuilds
   void setVolume(double val) {
     _volume = val.clamp(0.0, 100.0);
     if (_isMuted && _volume > 0) {
       _isMuted = false;
     }
     _player?.setVolume(_volume);
-    notifyListeners();
+    volumeStateNotifier.value = (volume: _volume, isMuted: _isMuted);
   }
 
-  /// Toggle mute for Hero / Dialog previews
+  /// Toggle mute for Hero / Dialog previews without triggering full Video layer rebuilds
   void toggleMute() {
     _isMuted = !_isMuted;
     _player?.setVolume(_isMuted ? 0.0 : _volume);
-    notifyListeners();
+    volumeStateNotifier.value = (volume: _volume, isMuted: _isMuted);
   }
 
 

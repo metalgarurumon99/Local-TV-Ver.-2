@@ -52,4 +52,5 @@ out.txt
 err.txt
 library_config.json
 .cache/
+.env
 *.log

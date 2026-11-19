@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'app_settings_service.dart';
 
 class EpisodeOnlineMetadata {
   final int season;
@@ -54,9 +55,26 @@ class OnlineMetadataResult {
 
 class OnlineMetadataService {
   static const Duration _timeout = Duration(seconds: 6);
+  static final http.Client _httpClient = http.Client();
 
-  // TMDB Official API Credentials
-  static const String _apiKey = 'a86494a704a00c64c7bee39ebb220a43';
+  static Map<String, dynamic> _decodeJson(http.Response res) {
+    return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+  }
+
+  // TMDB API Key resolved from Settings UI or build-time `--dart-define=TMDB_API_KEY=...`
+  // (Never hardcoded in public source code!)
+  static const String _envApiKey = String.fromEnvironment('TMDB_API_KEY', defaultValue: '');
+
+  static String get _apiKey {
+    final userKey = AppSettingsService.instance.tmdbApiKey.trim();
+    if (userKey.isNotEmpty) return userKey;
+    return _envApiKey.trim();
+  }
+
+  static bool get hasApiKey => _apiKey.isNotEmpty;
+  static bool get isUsingCustomKey => AppSettingsService.instance.tmdbApiKey.trim().isNotEmpty;
+  static bool get hasBuiltInKey => _envApiKey.trim().isNotEmpty;
+
   static const String _apiBaseUrl = 'https://api.themoviedb.org/3';
 
   // Optimized TMDB Image CDN URLs (Preventing large original files)
@@ -68,13 +86,18 @@ class OnlineMetadataService {
   static const String _stillBaseUrl = 'https://image.tmdb.org/t/p/w300';
 
   /// Primary metadata search via TMDB (The Movie Database).
-  /// If not found in TMDB, returns null so local thumbnail extraction takes over.
-  static Future<OnlineMetadataResult?> searchMetadata(String queryTitle, {bool isSeries = false}) async {
+  /// Pass [localSeasons] to fetch exact seasons present on disk (supporting Season 6+, 10+, etc.).
+  static Future<OnlineMetadataResult?> searchMetadata(
+    String queryTitle, {
+    bool isSeries = false,
+    Set<int>? localSeasons,
+  }) async {
+    if (!hasApiKey) return null;
     final clean = _cleanQueryTitle(queryTitle);
     if (clean.length < 2) return null;
 
     try {
-      final tmdbResult = await _fetchTMDB(clean, preferTv: isSeries);
+      final tmdbResult = await _fetchTMDB(clean, preferTv: isSeries, localSeasons: localSeasons);
       if (tmdbResult != null) return tmdbResult;
     } catch (e) {
       debugPrint('TMDB fetch error for "$clean": $e');
@@ -100,7 +123,7 @@ class OnlineMetadataService {
     }
 
     // If Indonesian title is in Latin script (e.g. Indonesian local movies)
-    if (id.isNotEmpty && !_containsAsianCharacters(id) && id.toLowerCase() != 'beast') {
+    if (id.isNotEmpty && !_containsAsianCharacters(id)) {
       return id;
     }
 
@@ -119,7 +142,6 @@ class OnlineMetadataService {
 
     // Remove bracketed release info like [HorribleSubs], [1080p], (2020), etc.
     text = text.replaceAll(RegExp(r'\[[^\]]*\]'), ' ');
-    text = text.replaceAll(RegExp(r'\((19\d\d|20\d\d)\)'), ' '); // Keep or strip year
     text = text.replaceAll(RegExp(r'\([^\)]*\)'), ' ');
 
     // Remove common video tags
@@ -136,20 +158,24 @@ class OnlineMetadataService {
   }
 
   /// Query TMDB Multi-Search (Movies & TV Series)
-  static Future<OnlineMetadataResult?> _fetchTMDB(String title, {bool preferTv = false}) async {
+  static Future<OnlineMetadataResult?> _fetchTMDB(
+    String title, {
+    bool preferTv = false,
+    Set<int>? localSeasons,
+  }) async {
     // 1. Search TMDB
     final searchUri = Uri.parse(
       '$_apiBaseUrl/search/multi?api_key=$_apiKey&query=${Uri.encodeComponent(title)}&language=en-US&include_adult=false',
     );
 
-    final res = await http.get(searchUri).timeout(_timeout);
+    final res = await _httpClient.get(searchUri).timeout(_timeout);
     if (res.statusCode != 200) return null;
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = _decodeJson(res);
     final results = data['results'] as List<dynamic>?;
     if (results == null || results.isEmpty) {
       // Try searching TV specifically if multi returned nothing
-      return await _fetchTMDBTvDirect(title);
+      return await _fetchTMDBTvDirect(title, localSeasons: localSeasons);
     }
 
     // Pick top movie or tv item, respecting preferTv for series
@@ -179,21 +205,24 @@ class OnlineMetadataService {
     if (id == null) return null;
 
     if (mediaType == 'tv') {
-      return await _fetchTvDetails(id, title);
+      return await _fetchTvDetails(id, title, localSeasons: localSeasons);
     } else {
       return await _fetchMovieDetails(id, title);
     }
   }
 
   /// Fallback direct TV search if multi-search yields nothing
-  static Future<OnlineMetadataResult?> _fetchTMDBTvDirect(String title) async {
+  static Future<OnlineMetadataResult?> _fetchTMDBTvDirect(
+    String title, {
+    Set<int>? localSeasons,
+  }) async {
     final searchUri = Uri.parse(
       '$_apiBaseUrl/search/tv?api_key=$_apiKey&query=${Uri.encodeComponent(title)}&language=en-US&include_adult=false',
     );
-    final res = await http.get(searchUri).timeout(_timeout);
+    final res = await _httpClient.get(searchUri).timeout(_timeout);
     if (res.statusCode != 200) return null;
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final data = _decodeJson(res);
     final results = data['results'] as List<dynamic>?;
     if (results == null || results.isEmpty) return null;
 
@@ -201,26 +230,36 @@ class OnlineMetadataService {
     final id = match['id'] as int?;
     if (id == null) return null;
 
-    return await _fetchTvDetails(id, title);
+    return await _fetchTvDetails(id, title, localSeasons: localSeasons);
   }
 
-  /// Fetch TV Show Details, Credits (Cast & Director), and Season/Episode information
-  static Future<OnlineMetadataResult?> _fetchTvDetails(int tvId, String originalQuery) async {
-    // 1. Try fetching in Indonesian first
-    Map<String, dynamic>? idData;
-    try {
-      final idUri = Uri.parse('$_apiBaseUrl/tv/$tvId?api_key=$_apiKey&language=id-ID');
-      final idRes = await http.get(idUri).timeout(_timeout);
-      if (idRes.statusCode == 200) {
-        idData = jsonDecode(idRes.body) as Map<String, dynamic>;
-      }
-    } catch (_) {}
+  /// Fetch TV Show Details, Credits (Cast & Director), Logos, and Season/Episode info in parallel
+  static Future<OnlineMetadataResult?> _fetchTvDetails(
+    int tvId,
+    String originalQuery, {
+    Set<int>? localSeasons,
+  }) async {
+    final idUri = Uri.parse('$_apiBaseUrl/tv/$tvId?api_key=$_apiKey&language=id-ID');
+    final enUri = Uri.parse(
+      '$_apiBaseUrl/tv/$tvId?api_key=$_apiKey&language=en-US&append_to_response=images,credits&include_image_language=en,null',
+    );
 
-    // 2. Fetch English details for fallback and complete info
-    final enUri = Uri.parse('$_apiBaseUrl/tv/$tvId?api_key=$_apiKey&language=en-US&append_to_response=images');
-    final enRes = await http.get(enUri).timeout(_timeout);
-    if (enRes.statusCode != 200) return null;
-    final enData = jsonDecode(enRes.body) as Map<String, dynamic>;
+    final responses = await Future.wait<http.Response?>([
+      _httpClient.get(idUri).timeout(_timeout).then<http.Response?>((r) => r).catchError((_) => null),
+      _httpClient.get(enUri).timeout(_timeout).then<http.Response?>((r) => r).catchError((_) => null),
+    ]);
+
+    final idRes = responses[0];
+    final enRes = responses[1];
+    if (enRes == null || enRes.statusCode != 200) return null;
+
+    Map<String, dynamic>? idData;
+    if (idRes != null && idRes.statusCode == 200) {
+      try {
+        idData = _decodeJson(idRes);
+      } catch (_) {}
+    }
+    final enData = _decodeJson(enRes);
 
     // Prefer Indonesian title & overview if available and valid
     final idOverview = (idData?['overview'] as String? ?? '').trim();
@@ -268,34 +307,28 @@ class OnlineMetadataService {
         .toList();
     final genre = genresList != null && genresList.isNotEmpty ? genresList.join(', ') : 'Series & Anime';
 
-    // 3. Fetch Credits (Cast & Director)
+    // Credits (Cast & Director) extracted directly from append_to_response=credits
     List<String> cast = [];
     String? director;
-    try {
-      final creditsUri = Uri.parse('$_apiBaseUrl/tv/$tvId/credits?api_key=$_apiKey&language=en-US');
-      final creditsRes = await http.get(creditsUri).timeout(_timeout);
-      if (creditsRes.statusCode == 200) {
-        final creditsData = jsonDecode(creditsRes.body) as Map<String, dynamic>;
-        final rawCast = creditsData['cast'] as List<dynamic>? ?? [];
-        cast = rawCast
-            .take(6)
-            .map((c) => (c as Map<String, dynamic>)['name']?.toString() ?? '')
-            .where((n) => n.isNotEmpty)
-            .toList();
+    final creditsData = enData['credits'] as Map<String, dynamic>?;
+    if (creditsData != null) {
+      final rawCast = creditsData['cast'] as List<dynamic>? ?? [];
+      cast = rawCast
+          .take(6)
+          .map((c) => (c as Map<String, dynamic>)['name']?.toString() ?? '')
+          .where((n) => n.isNotEmpty)
+          .toList();
 
-        final rawCrew = creditsData['crew'] as List<dynamic>? ?? [];
-        for (final c in rawCrew) {
-          if (c is Map<String, dynamic>) {
-            final job = (c['job'] as String? ?? '').toLowerCase();
-            if (job == 'director' || job == 'series director' || job == 'creator') {
-              director = c['name'] as String?;
-              break;
-            }
+      final rawCrew = creditsData['crew'] as List<dynamic>? ?? [];
+      for (final c in rawCrew) {
+        if (c is Map<String, dynamic>) {
+          final job = (c['job'] as String? ?? '').toLowerCase();
+          if (job == 'director' || job == 'series director' || job == 'creator') {
+            director = c['name'] as String?;
+            break;
           }
         }
       }
-    } catch (e) {
-      debugPrint('Error fetching TV credits: $e');
     }
 
     // Fallback director from 'created_by' in TV details
@@ -306,23 +339,38 @@ class OnlineMetadataService {
       }
     }
 
-    // 4. Fetch Episodes for available seasons (e.g. Season 1, 2, etc.)
-    final List<EpisodeOnlineMetadata> episodeList = [];
+    // Fetch Episodes for seasons that actually exist on disk (no arbitrary 5-season cap!)
     final rawSeasons = enData['seasons'] as List<dynamic>? ?? [];
-
+    final Set<int> availableTmdbSeasons = {};
     for (final s in rawSeasons) {
       if (s is Map<String, dynamic>) {
-        final seasonNum = (s['season_number'] as num?)?.toInt() ?? 1;
-        if (seasonNum == 0) continue; // Skip specials in default fetch
-        if (seasonNum > 5) break; // Limit to first 5 seasons to keep scan lightning fast
+        final seasonNum = (s['season_number'] as num?)?.toInt() ?? 0;
+        if (seasonNum > 0) availableTmdbSeasons.add(seasonNum);
+      }
+    }
 
+    final List<int> seasonNumbers;
+    if (localSeasons != null && localSeasons.isNotEmpty) {
+      final matched = localSeasons.where((s) => s > 0 && availableTmdbSeasons.contains(s)).toList()..sort();
+      if (matched.isNotEmpty) {
+        seasonNumbers = matched;
+      } else {
+        // Fallback if local folder uses custom numbering not directly matching TMDB season index
+        seasonNumbers = (availableTmdbSeasons.toList()..sort()).take(5).toList();
+      }
+    } else {
+      seasonNumbers = (availableTmdbSeasons.toList()..sort()).take(5).toList();
+    }
+
+    final seasonResults = await Future.wait(
+      seasonNumbers.map((seasonNum) async {
+        final List<EpisodeOnlineMetadata> eps = [];
         try {
           final seasonUri = Uri.parse('$_apiBaseUrl/tv/$tvId/season/$seasonNum?api_key=$_apiKey&language=en-US');
-          final seasonRes = await http.get(seasonUri).timeout(_timeout);
+          final seasonRes = await _httpClient.get(seasonUri).timeout(_timeout);
           if (seasonRes.statusCode == 200) {
-            final seasonData = jsonDecode(seasonRes.body) as Map<String, dynamic>;
+            final seasonData = _decodeJson(seasonRes);
             final rawEps = seasonData['episodes'] as List<dynamic>? ?? [];
-
             for (final ep in rawEps) {
               if (ep is Map<String, dynamic>) {
                 final epNum = (ep['episode_number'] as num?)?.toInt() ?? 1;
@@ -333,7 +381,7 @@ class OnlineMetadataService {
                 final runtime = (ep['runtime'] as num?)?.toInt();
                 final durationStr = runtime != null && runtime > 0 ? '${runtime}m' : null;
 
-                episodeList.add(EpisodeOnlineMetadata(
+                eps.add(EpisodeOnlineMetadata(
                   season: seasonNum,
                   episodeNumber: epNum,
                   title: epName,
@@ -347,11 +395,15 @@ class OnlineMetadataService {
         } catch (e) {
           debugPrint('Error fetching Season $seasonNum for TV $tvId: $e');
         }
-      }
-    }
+        return eps;
+      }),
+    );
 
-    // 5. Fetch Best Logo (Prioritize English 'en', then other languages)
-    final logoUrl = await _fetchBestLogo('tv/$tvId');
+    final List<EpisodeOnlineMetadata> episodeList = [
+      for (final s in seasonResults) ...s,
+    ];
+
+    final logoUrl = _pickBestLogoFromImages(imagesObj);
 
     return OnlineMetadataResult(
       title: effectiveTitle,
@@ -370,23 +422,29 @@ class OnlineMetadataService {
     );
   }
 
-  /// Fetch Movie Details and Credits (Cast & Director)
+  /// Fetch Movie Details, Credits, and Logos in parallel
   static Future<OnlineMetadataResult?> _fetchMovieDetails(int movieId, String originalQuery) async {
-    // 1. Try Indonesian first
-    Map<String, dynamic>? idData;
-    try {
-      final idUri = Uri.parse('$_apiBaseUrl/movie/$movieId?api_key=$_apiKey&language=id-ID');
-      final idRes = await http.get(idUri).timeout(_timeout);
-      if (idRes.statusCode == 200) {
-        idData = jsonDecode(idRes.body) as Map<String, dynamic>;
-      }
-    } catch (_) {}
+    final idUri = Uri.parse('$_apiBaseUrl/movie/$movieId?api_key=$_apiKey&language=id-ID');
+    final enUri = Uri.parse(
+      '$_apiBaseUrl/movie/$movieId?api_key=$_apiKey&language=en-US&append_to_response=images,credits&include_image_language=en,null',
+    );
 
-    // 2. Fetch English
-    final enUri = Uri.parse('$_apiBaseUrl/movie/$movieId?api_key=$_apiKey&language=en-US&append_to_response=images');
-    final enRes = await http.get(enUri).timeout(_timeout);
-    if (enRes.statusCode != 200) return null;
-    final enData = jsonDecode(enRes.body) as Map<String, dynamic>;
+    final responses = await Future.wait<http.Response?>([
+      _httpClient.get(idUri).timeout(_timeout).then<http.Response?>((r) => r).catchError((_) => null),
+      _httpClient.get(enUri).timeout(_timeout).then<http.Response?>((r) => r).catchError((_) => null),
+    ]);
+
+    final idRes = responses[0];
+    final enRes = responses[1];
+    if (enRes == null || enRes.statusCode != 200) return null;
+
+    Map<String, dynamic>? idData;
+    if (idRes != null && idRes.statusCode == 200) {
+      try {
+        idData = _decodeJson(idRes);
+      } catch (_) {}
+    }
+    final enData = _decodeJson(enRes);
 
     final idOverview = (idData?['overview'] as String? ?? '').trim();
     final enOverview = (enData['overview'] as String? ?? '').trim();
@@ -430,38 +488,31 @@ class OnlineMetadataService {
         .toList();
     final genre = genresList != null && genresList.isNotEmpty ? genresList.join(', ') : 'Film';
 
-    // 3. Fetch Credits (Cast & Director)
+    // Credits extracted directly from append_to_response=credits
     List<String> cast = [];
     String? director;
-    try {
-      final creditsUri = Uri.parse('$_apiBaseUrl/movie/$movieId/credits?api_key=$_apiKey&language=en-US');
-      final creditsRes = await http.get(creditsUri).timeout(_timeout);
-      if (creditsRes.statusCode == 200) {
-        final creditsData = jsonDecode(creditsRes.body) as Map<String, dynamic>;
-        final rawCast = creditsData['cast'] as List<dynamic>? ?? [];
-        cast = rawCast
-            .take(6)
-            .map((c) => (c as Map<String, dynamic>)['name']?.toString() ?? '')
-            .where((n) => n.isNotEmpty)
-            .toList();
+    final creditsData = enData['credits'] as Map<String, dynamic>?;
+    if (creditsData != null) {
+      final rawCast = creditsData['cast'] as List<dynamic>? ?? [];
+      cast = rawCast
+          .take(6)
+          .map((c) => (c as Map<String, dynamic>)['name']?.toString() ?? '')
+          .where((n) => n.isNotEmpty)
+          .toList();
 
-        final rawCrew = creditsData['crew'] as List<dynamic>? ?? [];
-        for (final c in rawCrew) {
-          if (c is Map<String, dynamic>) {
-            final job = (c['job'] as String? ?? '').toLowerCase();
-            if (job == 'director') {
-              director = c['name'] as String?;
-              break;
-            }
+      final rawCrew = creditsData['crew'] as List<dynamic>? ?? [];
+      for (final c in rawCrew) {
+        if (c is Map<String, dynamic>) {
+          final job = (c['job'] as String? ?? '').toLowerCase();
+          if (job == 'director') {
+            director = c['name'] as String?;
+            break;
           }
         }
       }
-    } catch (e) {
-      debugPrint('Error fetching Movie credits: $e');
     }
 
-    // 4. Fetch Best Logo (Prioritize English 'en', then other languages)
-    final logoUrl = await _fetchBestLogo('movie/$movieId');
+    final logoUrl = _pickBestLogoFromImages(imagesObj);
 
     return OnlineMetadataResult(
       title: effectiveTitle,
@@ -479,45 +530,32 @@ class OnlineMetadataService {
     );
   }
 
-  /// Fetch Best Official Logo (PNG), prioritizing English ('en') and transparent PNGs
-  static Future<String?> _fetchBestLogo(String endpoint) async {
-    try {
-      final uri = Uri.parse('$_apiBaseUrl/$endpoint/images?api_key=$_apiKey');
-      final res = await http.get(uri).timeout(_timeout);
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final logos = data['logos'] as List<dynamic>? ?? [];
-        if (logos.isEmpty) return null;
+  /// Pick best official PNG logo from appended TMDB images object (0 extra HTTP calls)
+  static String? _pickBestLogoFromImages(Map<String, dynamic>? imagesObj) {
+    final logos = imagesObj?['logos'] as List<dynamic>? ?? [];
+    if (logos.isEmpty) return null;
 
-        bool isPng(dynamic path) => path is String && path.toLowerCase().endsWith('.png');
+    bool isPng(dynamic path) => path is String && path.toLowerCase().endsWith('.png');
 
-        // 1. Prioritize English PNG logo ('en')
-        for (final l in logos) {
-          if (l is Map<String, dynamic> && l['iso_639_1'] == 'en' && isPng(l['file_path'])) {
-            return '$_posterBaseUrl${l['file_path']}';
-          }
-        }
-        // 2. Fallback to null / no language specified PNG
-        for (final l in logos) {
-          if (l is Map<String, dynamic> && (l['iso_639_1'] == null || l['iso_639_1'] == '') && isPng(l['file_path'])) {
-            return '$_posterBaseUrl${l['file_path']}';
-          }
-        }
-        // 3. Fallback to any available PNG logo from other languages
-        for (final l in logos) {
-          if (l is Map<String, dynamic> && isPng(l['file_path'])) {
-            return '$_posterBaseUrl${l['file_path']}';
-          }
-        }
-        // 4. Ultimate fallback to any non-empty logo path
-        for (final l in logos) {
-          if (l is Map<String, dynamic> && l['file_path'] != null) {
-            return '$_posterBaseUrl${l['file_path']}';
-          }
-        }
+    for (final l in logos) {
+      if (l is Map<String, dynamic> && l['iso_639_1'] == 'en' && isPng(l['file_path'])) {
+        return '$_posterBaseUrl${l['file_path']}';
       }
-    } catch (e) {
-      debugPrint('Error fetching logo for $endpoint: $e');
+    }
+    for (final l in logos) {
+      if (l is Map<String, dynamic> && (l['iso_639_1'] == null || l['iso_639_1'] == '') && isPng(l['file_path'])) {
+        return '$_posterBaseUrl${l['file_path']}';
+      }
+    }
+    for (final l in logos) {
+      if (l is Map<String, dynamic> && isPng(l['file_path'])) {
+        return '$_posterBaseUrl${l['file_path']}';
+      }
+    }
+    for (final l in logos) {
+      if (l is Map<String, dynamic> && l['file_path'] != null) {
+        return '$_posterBaseUrl${l['file_path']}';
+      }
     }
     return null;
   }

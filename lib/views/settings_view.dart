@@ -1,16 +1,20 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../services/app_settings_service.dart';
 import '../services/library_service.dart';
+import '../services/metadata_service.dart';
 import '../components/hover_animated_widget.dart';
 
 class SettingsView extends StatefulWidget {
   final VoidCallback onLibraryUpdated;
+  final void Function(String folderPath)? onFolderAdded;
   final VoidCallback? onPickLocalFile;
   final VoidCallback? onSyncLibrary;
 
   const SettingsView({
     super.key,
     required this.onLibraryUpdated,
+    this.onFolderAdded,
     this.onPickLocalFile,
     this.onSyncLibrary,
   });
@@ -24,28 +28,45 @@ class _SettingsViewState extends State<SettingsView> {
 
   // Folder state
   List<String> _folders = [];
+  Map<String, bool> _folderOnlineStatus = {};
   bool _isLoadingFolders = true;
 
-  // Playback settings state
-  bool _volumeBoostEnabled = true;
-  bool _continuousAutoplay = true;
-  double _defaultPlaybackSpeed = 1.0;
+  // TMDB API Key UI state
+  late final TextEditingController _tmdbKeyController;
+  bool _obscureTmdbKey = true;
 
-  // Subtitle settings state
-  int _subtitleSize = 55;
-  String _preferredSubtitleLanguage = 'id';
+  // Persisted playback & subtitle settings synced with AppSettingsService
+  AppSettingsService get _settings => AppSettingsService.instance;
+  bool get _volumeBoostEnabled => _settings.volumeBoostEnabled;
+  bool get _continuousAutoplay => _settings.continuousAutoplay;
+  double get _defaultPlaybackSpeed => _settings.defaultPlaybackSpeed;
+  int get _subtitleSize => _settings.subtitleSize;
+  String get _preferredSubtitleLanguage => _settings.preferredSubtitleLanguage;
 
   @override
   void initState() {
     super.initState();
+    _tmdbKeyController = TextEditingController(text: _settings.tmdbApiKey);
     _loadFolders();
+  }
+
+  @override
+  void dispose() {
+    _tmdbKeyController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadFolders() async {
     final list = await LocalLibraryService.getAllConfiguredFolders();
+    final Map<String, bool> onlineMap = {};
+    for (final folder in list) {
+      final resolved = LocalLibraryService.resolveFolderPath(folder);
+      onlineMap[folder] = await Directory(resolved).exists();
+    }
     if (mounted) {
       setState(() {
         _folders = list;
+        _folderOnlineStatus = onlineMap;
         _isLoadingFolders = false;
       });
     }
@@ -53,16 +74,24 @@ class _SettingsViewState extends State<SettingsView> {
 
   Future<void> _addFolder() async {
     final added = await LocalLibraryService.pickAndAddFolder();
+    if (!mounted) return;
     if (added != null) {
       await _loadFolders();
-      widget.onLibraryUpdated();
+      if (!mounted) return;
+      if (widget.onFolderAdded != null) {
+        widget.onFolderAdded!(added);
+      } else {
+        widget.onLibraryUpdated();
+      }
     }
   }
 
   Future<void> _removeFolder(String path) async {
     LocalLibraryService.cancelScan();
     await LocalLibraryService.removeFolder(path);
+    if (!mounted) return;
     await _loadFolders();
+    if (!mounted) return;
     widget.onLibraryUpdated();
   }
 
@@ -151,7 +180,8 @@ class _SettingsViewState extends State<SettingsView> {
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 12.5,
-                          fontFamily: 'Consolas, monospace',
+                          fontFamily: 'Consolas',
+                          fontFamilyFallback: ['monospace'],
                           fontWeight: FontWeight.w500,
                         ),
                         maxLines: 2,
@@ -507,8 +537,7 @@ class _SettingsViewState extends State<SettingsView> {
               separatorBuilder: (_, _) => const Divider(color: Colors.white10, height: 1),
               itemBuilder: (ctx, index) {
                 final folder = _folders[index];
-                final resolved = LocalLibraryService.resolveFolderPath(folder);
-                final isOnline = Directory(resolved).existsSync();
+                final isOnline = _folderOnlineStatus[folder] ?? false;
 
                 return ListTile(
                   dense: true,
@@ -578,6 +607,115 @@ class _SettingsViewState extends State<SettingsView> {
             ),
           ],
         ),
+
+        const SizedBox(height: 28),
+        const Divider(color: Colors.white12, height: 1),
+        const SizedBox(height: 20),
+
+        // TMDB API Key Configuration (Portable & Secure — never hardcoded in source)
+        Row(
+          children: [
+            const Text(
+              'TMDB API Key (Metadata Online)',
+              style: TextStyle(color: Colors.white, fontSize: 15.5, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: OnlineMetadataService.hasApiKey
+                    ? Colors.greenAccent.withValues(alpha: 0.14)
+                    : Colors.amber.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                OnlineMetadataService.isUsingCustomKey
+                    ? 'AKTIF (KUSTOM)'
+                    : (OnlineMetadataService.hasBuiltInKey ? 'AKTIF (BAWAAN)' : 'BELUM DIATUR'),
+                style: TextStyle(
+                  color: OnlineMetadataService.hasApiKey ? Colors.greenAccent : Colors.amber.shade300,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          OnlineMetadataService.hasBuiltInKey && !OnlineMetadataService.isUsingCustomKey
+              ? 'Metadata online TMDB sudah aktif otomatis dari build rilis. Anda hanya perlu mengisi kolom di bawah jika ingin memakai API Key pribadi.'
+              : 'Masukkan API Key v3 gratis dari themoviedb.org untuk mengunduh poster, backdrop, logo, dan sinopsis episode secara otomatis. Disimpan lokal di .cache/app_settings.json.',
+          style: const TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _tmdbKeyController,
+                obscureText: _obscureTmdbKey,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: 'Masukkan TMDB API Key (opsional jika sudah di-set saat build)...',
+                  hintStyle: const TextStyle(color: Colors.white30, fontSize: 12.5),
+                  filled: true,
+                  fillColor: Colors.black38,
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Colors.white12),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Colors.white12),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: const BorderSide(color: Color(0xFFE50914)),
+                  ),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscureTmdbKey ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                      color: Colors.white54,
+                      size: 18,
+                    ),
+                    onPressed: () => setState(() => _obscureTmdbKey = !_obscureTmdbKey),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            ElevatedButton.icon(
+              onPressed: () async {
+                await _settings.setTmdbApiKey(_tmdbKeyController.text);
+                if (!mounted) return;
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    backgroundColor: const Color(0xFF222222),
+                    behavior: SnackBarBehavior.floating,
+                    content: Text(
+                      OnlineMetadataService.hasApiKey
+                          ? 'TMDB API Key berhasil disimpan!'
+                          : 'TMDB API Key dikosongkan.',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    duration: const Duration(seconds: 3),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.save_rounded, size: 16, color: Colors.white),
+              label: const Text('Simpan', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE50914),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
@@ -603,7 +741,10 @@ class _SettingsViewState extends State<SettingsView> {
           title: 'Audio Boost hingga 130% (Native MPV)',
           subtitle: 'Mengizinkan slider volume dan scroll mouse menaikkan volume melebihi 100% untuk video bersuara pelan.',
           value: _volumeBoostEnabled,
-          onChanged: (val) => setState(() => _volumeBoostEnabled = val),
+          onChanged: (val) async {
+            await _settings.setVolumeBoostEnabled(val);
+            if (mounted) setState(() {});
+          },
         ),
         const SizedBox(height: 14),
 
@@ -612,7 +753,10 @@ class _SettingsViewState extends State<SettingsView> {
           title: 'Mode Tidur & Putar Otomatis',
           subtitle: 'Otomatis memutar episode berikutnya saat video selesai, atau beralih ke judul acak lain saat serial habis.',
           value: _continuousAutoplay,
-          onChanged: (val) => setState(() => _continuousAutoplay = val),
+          onChanged: (val) async {
+            await _settings.setContinuousAutoplay(val);
+            if (mounted) setState(() {});
+          },
         ),
         const SizedBox(height: 14),
 
@@ -702,8 +846,11 @@ class _SettingsViewState extends State<SettingsView> {
                   DropdownMenuItem(value: 1.25, child: Text('1.25x')),
                   DropdownMenuItem(value: 1.5, child: Text('1.5x')),
                 ],
-                onChanged: (val) {
-                  if (val != null) setState(() => _defaultPlaybackSpeed = val);
+                onChanged: (val) async {
+                  if (val != null) {
+                    await _settings.setDefaultPlaybackSpeed(val);
+                    if (mounted) setState(() {});
+                  }
                 },
               ),
             ],
@@ -765,8 +912,11 @@ class _SettingsViewState extends State<SettingsView> {
                   DropdownMenuItem(value: 'en', child: Text('English')),
                   DropdownMenuItem(value: 'auto', child: Text('Track Default Video')),
                 ],
-                onChanged: (val) {
-                  if (val != null) setState(() => _preferredSubtitleLanguage = val);
+                onChanged: (val) async {
+                  if (val != null) {
+                    await _settings.setPreferredSubtitleLanguage(val);
+                    if (mounted) setState(() {});
+                  }
                 },
               ),
             ],
@@ -810,8 +960,11 @@ class _SettingsViewState extends State<SettingsView> {
                   DropdownMenuItem(value: 55, child: Text('Sedang (55 pt - Rekomendasi)')),
                   DropdownMenuItem(value: 68, child: Text('Besar (68 pt)')),
                 ],
-                onChanged: (val) {
-                  if (val != null) setState(() => _subtitleSize = val);
+                onChanged: (val) async {
+                  if (val != null) {
+                    await _settings.setSubtitleSize(val);
+                    if (mounted) setState(() {});
+                  }
                 },
               ),
             ],
@@ -927,8 +1080,14 @@ class _SettingsViewState extends State<SettingsView> {
         const SizedBox(height: 18),
 
         OutlinedButton.icon(
-          onPressed: () {
-            Process.run('explorer.exe', [Directory.current.path]);
+          onPressed: () async {
+            if (!Platform.isWindows) return;
+            try {
+              final appDir = File(Platform.resolvedExecutable).parent.path;
+              await Process.run('explorer.exe', [appDir]);
+            } catch (e) {
+              debugPrint('Error opening app directory: $e');
+            }
           },
           icon: const Icon(Icons.folder_open_rounded, size: 17, color: Colors.white70),
           label: const Text('Buka Folder Aplikasi di File Explorer', style: TextStyle(color: Colors.white70, fontSize: 12.5)),

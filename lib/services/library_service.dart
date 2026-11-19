@@ -6,7 +6,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import '../models/media_item.dart';
 import 'metadata_service.dart';
-import 'preview_player_service.dart';
 import 'thumbnail_service.dart';
 import 'watch_history_service.dart';
 
@@ -45,6 +44,60 @@ class LocalLibraryService {
     '.wmv',
   };
 
+  // Real-time folder watchers (debounced auto-detect when new video files are added/removed)
+  static final List<StreamSubscription<FileSystemEvent>> _folderWatchSubs = [];
+  static Timer? _watchDebounceTimer;
+  static List<String> _watchedFolderPaths = const [];
+
+  /// Start watching [folders] for new/deleted/moved video files and invoke [onChanged]
+  /// after a 3-second debounce so bulk file copies only trigger a single scan.
+  static void startWatchingFolders(List<String> folders, VoidCallback onChanged) {
+    final normalized = folders.map((f) => f.trim()).where((f) => f.isNotEmpty).toList()..sort();
+    if (_watchedFolderPaths.length == normalized.length &&
+        _watchedFolderPaths.asMap().entries.every((e) => e.value == normalized[e.key])) {
+      return; // Already watching the exact same folder set
+    }
+
+    stopWatchingFolders();
+    _watchedFolderPaths = normalized;
+
+    for (final folder in normalized) {
+      try {
+        final dir = Directory(resolveFolderPath(folder));
+        if (!dir.existsSync()) continue;
+        final sub = dir.watch(recursive: true).listen(
+          (event) {
+            final lower = event.path.toLowerCase();
+            final isVideo = supportedVideoExtensions.any((ext) => lower.endsWith(ext));
+            if (!isVideo && event.type != FileSystemEvent.delete && event.type != FileSystemEvent.move) {
+              return;
+            }
+            _watchDebounceTimer?.cancel();
+            _watchDebounceTimer = Timer(const Duration(seconds: 3), onChanged);
+          },
+          onError: (Object e) {
+            debugPrint('Folder watch error on $folder: $e');
+          },
+          cancelOnError: false,
+        );
+        _folderWatchSubs.add(sub);
+      } catch (e) {
+        debugPrint('Could not watch folder $folder: $e');
+      }
+    }
+  }
+
+  /// Stop all active real-time folder watchers.
+  static void stopWatchingFolders() {
+    _watchDebounceTimer?.cancel();
+    _watchDebounceTimer = null;
+    for (final sub in _folderWatchSubs) {
+      sub.cancel();
+    }
+    _folderWatchSubs.clear();
+    _watchedFolderPaths = const [];
+  }
+
   static File _resolveAppFile(String relativeName) {
     final direct = File(relativeName);
     if (direct.existsSync()) return direct;
@@ -82,7 +135,7 @@ class LocalLibraryService {
       }
       try {
         final file = _configFile;
-        final tmpFile = _resolveAppFile('library_config.json.tmp');
+        final tmpFile = File('${file.path}.tmp');
         String? content;
         if (await file.exists()) {
           try {
@@ -121,23 +174,33 @@ class LocalLibraryService {
     });
   }
 
-  /// Save full configuration to disk asynchronously with Atomic Write (.tmp -> rename)
+  /// Save full configuration to disk asynchronously with safe Atomic Write (.tmp -> rename)
   static Future<void> _writeConfig(Map<String, dynamic> config) async {
     return _configLock.synchronized(() async {
       _memoryConfig = config;
       try {
-        final snapshot = Map<String, dynamic>.from(config);
-        final encoded = await Isolate.run(() => jsonEncode(snapshot));
+        // Encode synchronously on snapshot or deep copy to avoid ConcurrentModificationError across isolates
+        final encoded = jsonEncode(config);
         final file = _configFile;
-        final tmpFile = _resolveAppFile('library_config.json.tmp');
+        final tmpFile = File('${file.path}.tmp');
         await tmpFile.writeAsString(encoded, flush: true);
         if (await tmpFile.exists() && (await tmpFile.length()) > 0) {
-          if (await file.exists()) {
-            try {
-              await file.delete();
-            } catch (_) {}
+          try {
+            await tmpFile.rename(file.path);
+          } catch (_) {
+            // Windows fallback: move existing file to .bak before renaming .tmp so we never lose data
+            final bakFile = File('${file.path}.bak');
+            if (await file.exists()) {
+              if (await bakFile.exists()) await bakFile.delete();
+              await file.rename(bakFile.path);
+            }
+            await tmpFile.rename(file.path);
+            if (await bakFile.exists()) {
+              try {
+                await bakFile.delete();
+              } catch (_) {}
+            }
           }
-          await tmpFile.rename(file.path);
         }
       } catch (e) {
         debugPrint('Error writing library config: $e');
@@ -145,18 +208,23 @@ class LocalLibraryService {
     });
   }
 
+  /// Trailing-separator-safe Windows path containment check (avoids D:\Movies matching D:\Movies2)
+  static bool _isPathUnderFolder(String filePath, String folderPath) {
+    if (filePath.isEmpty || folderPath.isEmpty) return false;
+    final np = filePath.replaceAll('/', '\\').toLowerCase().trim();
+    var nf = folderPath.replaceAll('/', '\\').toLowerCase().trim();
+    if (np == nf) return true;
+    if (!nf.endsWith('\\')) nf = '$nf\\';
+    return np.startsWith(nf);
+  }
+
   /// Helper to determine whether an item belongs to any currently connected folders
   static bool _isItemInFolders(MediaItem item, List<String> folders) {
     if (folders.isEmpty) return false;
-    final normalizedFolders = folders
-        .map((f) => f.replaceAll('/', '\\').toLowerCase().trim())
-        .where((f) => f.isNotEmpty)
-        .toList();
 
     bool matches(String path) {
       if (path.isEmpty) return false;
-      final np = path.replaceAll('/', '\\').toLowerCase().trim();
-      return normalizedFolders.any((f) => np.startsWith(f));
+      return folders.any((f) => _isPathUnderFolder(path, f));
     }
 
     if (item.videoPath.isNotEmpty && matches(item.videoPath)) return true;
@@ -269,14 +337,6 @@ class LocalLibraryService {
     return List<MediaItem>.from(items);
   }
 
-  /// Save current media items list to disk cache
-  static Future<void> saveCachedItems(List<MediaItem> items) async {
-    _memoryCachedItems = List<MediaItem>.from(items);
-    final config = await _readConfig();
-    config['cachedItems'] = items.map((e) => e.toJson()).toList();
-    await _writeConfig(config);
-  }
-
   /// Get accessible connected folders. Automatically resolves Windows drive changes.
   /// NEVER deletes unplugged/offline folders from configuration!
   static Future<List<String>> getConnectedFolders() async {
@@ -328,7 +388,7 @@ class LocalLibraryService {
     final clean = videoPath.trim();
     // Fast Windows drive letter check (e.g. F:\)
     if (clean.length >= 2 && clean[1] == ':') {
-      final drive = clean.substring(0, 3);
+      final drive = '${clean.substring(0, 2)}\\';
       if (!Directory(drive).existsSync()) {
         _pathExistenceCache[videoPath] = false;
         return false;
@@ -353,15 +413,7 @@ class LocalLibraryService {
     if (path.isEmpty) return false;
 
     if (connectedFolders != null && connectedFolders.isNotEmpty) {
-      final normPath = path.replaceAll('/', '\\').toLowerCase();
-      bool isUnderActive = false;
-      for (final f in connectedFolders) {
-        final normF = f.replaceAll('/', '\\').toLowerCase();
-        if (normPath.startsWith(normF)) {
-          isUnderActive = true;
-          break;
-        }
-      }
+      final bool isUnderActive = connectedFolders.any((f) => _isPathUnderFolder(path, f));
       if (!isUnderActive) {
         return false;
       }
@@ -462,7 +514,6 @@ class LocalLibraryService {
 
       final activePosterPaths = <String>{};
       final activeThumbPaths = <String>{};
-      final activePreviewPaths = <String>{};
 
       for (final it in items) {
         if (it.customThumbnail != null &&
@@ -486,7 +537,6 @@ class LocalLibraryService {
           activePosterPaths.add(it.logoUrl!.replaceAll('/', '\\').toLowerCase().trim());
         }
         if (it.videoPath.isNotEmpty) {
-          activePreviewPaths.add(PreviewPlayerService.getCachedPreviewPath(it.videoPath).replaceAll('/', '\\').toLowerCase().trim());
           activeThumbPaths.add(LocalThumbnailService.getThumbnailPath(it.videoPath).replaceAll('/', '\\').toLowerCase().trim());
         }
         for (final ep in it.episodes) {
@@ -494,28 +544,50 @@ class LocalLibraryService {
             activeThumbPaths.add(ep.thumbnail!.replaceAll('/', '\\').toLowerCase().trim());
           }
           if (ep.videoPath.isNotEmpty) {
-            activePreviewPaths.add(PreviewPlayerService.getCachedPreviewPath(ep.videoPath).replaceAll('/', '\\').toLowerCase().trim());
             activeThumbPaths.add(LocalThumbnailService.getThumbnailPath(ep.videoPath).replaceAll('/', '\\').toLowerCase().trim());
           }
         }
       }
 
-      // 1. Posters
-      final posterDir = Directory('.cache/posters');
+      Directory resolveCacheSubdir(String sub) {
+        final direct = Directory('.cache/$sub');
+        if (direct.existsSync()) return direct;
+        try {
+          final exeDir = File(Platform.resolvedExecutable).parent.path;
+          final resolved = Directory('$exeDir${Platform.pathSeparator}.cache${Platform.pathSeparator}$sub');
+          if (resolved.existsSync()) return resolved;
+        } catch (_) {}
+        return direct;
+      }
+
+      // 1. Posters & Backdrops
+      final posterDir = resolveCacheSubdir('posters');
       if (posterDir.existsSync()) {
         for (final entity in posterDir.listSync()) {
           if (entity is File) {
             final np = entity.path.replaceAll('/', '\\').toLowerCase().trim();
-            final isBackdrop = np.contains('backdrop');
-            if (configuredFolders.isEmpty || (!activePosterPaths.contains(np) && !isBackdrop)) {
+            if (configuredFolders.isEmpty || !activePosterPaths.contains(np)) {
               try { entity.deleteSync(); } catch (_) {}
             }
           }
         }
       }
 
-      // 2. Thumbnails
-      final thumbDir = Directory('.cache/thumbnails');
+      // 2. Logos
+      final logoDir = resolveCacheSubdir('logos');
+      if (logoDir.existsSync()) {
+        for (final entity in logoDir.listSync()) {
+          if (entity is File) {
+            final np = entity.path.replaceAll('/', '\\').toLowerCase().trim();
+            if (configuredFolders.isEmpty || !activePosterPaths.contains(np)) {
+              try { entity.deleteSync(); } catch (_) {}
+            }
+          }
+        }
+      }
+
+      // 3. Thumbnails
+      final thumbDir = resolveCacheSubdir('thumbnails');
       if (thumbDir.existsSync()) {
         for (final entity in thumbDir.listSync()) {
           if (entity is File) {
@@ -527,12 +599,24 @@ class LocalLibraryService {
         }
       }
 
-      // 3. Previews - Clear legacy 360p clips to reclaim disk space (Direct hardware playback is now used)
-      final previewDir = Directory('.cache/previews');
+      // 4. Previews - Clear legacy 360p clips to reclaim disk space (Direct hardware playback is now used)
+      final previewDir = resolveCacheSubdir('previews');
       if (previewDir.existsSync()) {
         for (final entity in previewDir.listSync()) {
           if (entity is File) {
             try { entity.deleteSync(); } catch (_) {}
+          }
+        }
+      }
+
+      // 5. Trickplay sprites when all folders removed
+      if (configuredFolders.isEmpty) {
+        final trickplayDir = resolveCacheSubdir('trickplay');
+        if (trickplayDir.existsSync()) {
+          for (final entity in trickplayDir.listSync()) {
+            if (entity is File) {
+              try { entity.deleteSync(); } catch (_) {}
+            }
           }
         }
       }
@@ -595,16 +679,27 @@ class LocalLibraryService {
     bool fetchOnlineMetadata = true,
     bool extractThumbnails = false,
     bool quickDiffCheck = false,
+    List<String>? onlyFolders,
     void Function(String message)? onProgress,
     void Function(List<MediaItem> currentItems, MediaItem readyItem)? onItemReady,
   }) async {
     final int scanId = ++_currentScanId;
     bool isCancelled() => scanId != _currentScanId;
 
-    final folders = await getConnectedFolders();
+    final allConnectedFolders = await getConnectedFolders();
+    final bool isIncrementalFolderScan = onlyFolders != null && onlyFolders.isNotEmpty;
+    final List<String> folders = isIncrementalFolderScan
+        ? onlyFolders
+            .map(resolveFolderPath)
+            .where((p) => p.isNotEmpty && Directory(p).existsSync())
+            .toList()
+        : allConnectedFolders;
+
     if (folders.isEmpty || isCancelled()) {
-      if (folders.isEmpty) _memoryCachedItems = [];
-      return [];
+      if (!isIncrementalFolderScan && allConnectedFolders.isEmpty) {
+        _memoryCachedItems = [];
+      }
+      return isIncrementalFolderScan ? await getCachedItems() : [];
     }
 
     final config = await _readConfig();
@@ -617,13 +712,16 @@ class LocalLibraryService {
     );
 
     if (groups.isEmpty || isCancelled()) {
+      if (isIncrementalFolderScan) {
+        return existingCached;
+      }
       if (groups.isEmpty) _memoryCachedItems = [];
       return [];
     }
 
     // Fast path: if quickDiffCheck is enabled and we already have cached items,
     // check if the exact set of video files on disk in connected folders is unchanged.
-    if (quickDiffCheck && existingCached.isNotEmpty) {
+    if (quickDiffCheck && !isIncrementalFolderScan && existingCached.isNotEmpty) {
       final Set<String> diskPaths = {};
       for (final g in groups.values) {
         for (final ep in g.episodes) {
@@ -692,17 +790,29 @@ class LocalLibraryService {
         return aCached.compareTo(bCached);
       });
 
+    // Hoist folder lists & offline item snapshot outside the scan loop to avoid O(N^2) disk I/O
+    final configuredFoldersAtStart = await getAllConfiguredFolders();
+    final preservedConnectedItems = isIncrementalFolderScan
+        ? existingCached.where((it) {
+            final inConnected = _isItemInFolders(it, allConnectedFolders);
+            final inTarget = _isItemInFolders(it, folders);
+            return inConnected && !inTarget;
+          }).toList()
+        : <MediaItem>[];
+    final offlineItemsSnapshot = existingCached.where((it) {
+      final inConfigured = _isItemInFolders(it, configuredFoldersAtStart);
+      final inConnected = _isItemInFolders(it, allConnectedFolders);
+      return inConfigured && !inConnected;
+    }).toList();
+    int itemsSinceLastWrite = 0;
+    DateTime lastWriteTime = DateTime.now();
+
     for (final entry in orderedEntries) {
       if (isCancelled()) return [];
 
-      final activeFolders = await getConnectedFolders();
-      if (activeFolders.isEmpty || isCancelled()) return [];
-
-      final groupFolderPath = entry.value.folderPath.replaceAll('/', '\\').toLowerCase().trim();
-      final isStillConnected = activeFolders.any((f) {
-        final nf = f.replaceAll('/', '\\').toLowerCase().trim();
-        return groupFolderPath.startsWith(nf) || nf.startsWith(groupFolderPath);
-      });
+      final isStillConnected = folders.any(
+        (f) => _isPathUnderFolder(entry.value.folderPath, f) || _isPathUnderFolder(f, entry.value.folderPath),
+      );
       if (!isStillConnected) continue;
 
       final groupKey = entry.key;
@@ -763,16 +873,35 @@ class LocalLibraryService {
         }
       }
 
+      bool hasReparsedEpisodeNumbers = false;
       final List<Episode> mergedEpisodes = group.episodes.map((ep) {
-        final prev = oldEpByPath[ep.videoPath.toLowerCase().trim()] ??
-            oldEpBySeasonNum['${ep.season}:${ep.episodeNumber}'];
-        if (prev != null) {
+        final prevByPath = oldEpByPath[ep.videoPath.toLowerCase().trim()];
+        if (prevByPath != null) {
+          final bool sameSlot = prevByPath.season == ep.season && prevByPath.episodeNumber == ep.episodeNumber;
+          if (!sameSlot) {
+            hasReparsedEpisodeNumbers = true;
+            // Episode number changed (e.g., parser improvement): preserve local duration,
+            // but drop stale title/synopsis/thumbnail from the previously misparsed episode slot.
+            return ep.copyWith(
+              duration: prevByPath.duration ?? ep.duration,
+            );
+          }
           return ep.copyWith(
-            title: prev.title.isNotEmpty ? prev.title : ep.title,
-            synopsis: (prev.synopsis != null && prev.synopsis!.isNotEmpty) ? prev.synopsis : ep.synopsis,
-            thumbnail: (prev.thumbnail != null && prev.thumbnail!.isNotEmpty) ? prev.thumbnail : ep.thumbnail,
-            duration: prev.duration ?? ep.duration,
-            seasonName: ep.seasonName.isNotEmpty ? ep.seasonName : prev.seasonName,
+            title: prevByPath.title.isNotEmpty ? prevByPath.title : ep.title,
+            synopsis: (prevByPath.synopsis != null && prevByPath.synopsis!.isNotEmpty) ? prevByPath.synopsis : ep.synopsis,
+            thumbnail: (prevByPath.thumbnail != null && prevByPath.thumbnail!.isNotEmpty) ? prevByPath.thumbnail : ep.thumbnail,
+            duration: prevByPath.duration ?? ep.duration,
+            seasonName: ep.seasonName.isNotEmpty ? ep.seasonName : prevByPath.seasonName,
+          );
+        }
+        final prevBySlot = oldEpBySeasonNum['${ep.season}:${ep.episodeNumber}'];
+        if (prevBySlot != null) {
+          return ep.copyWith(
+            title: prevBySlot.title.isNotEmpty ? prevBySlot.title : ep.title,
+            synopsis: (prevBySlot.synopsis != null && prevBySlot.synopsis!.isNotEmpty) ? prevBySlot.synopsis : ep.synopsis,
+            thumbnail: (prevBySlot.thumbnail != null && prevBySlot.thumbnail!.isNotEmpty) ? prevBySlot.thumbnail : ep.thumbnail,
+            duration: prevBySlot.duration ?? ep.duration,
+            seasonName: ep.seasonName.isNotEmpty ? ep.seasonName : prevBySlot.seasonName,
           );
         }
         return ep;
@@ -792,6 +921,7 @@ class LocalLibraryService {
         videoPath: primaryVideoPath,
         customThumbnail: existingItem?.customThumbnail,
         backdropUrl: existingItem?.backdropUrl,
+        backdrop2Url: existingItem?.backdrop2Url,
         logoUrl: existingItem?.logoUrl,
         cast: existingItem?.cast ?? const [],
         director: existingItem?.director,
@@ -813,16 +943,25 @@ class LocalLibraryService {
           noOnlineInfoTitles.contains(groupKeyLower);
 
       // Once an item has been checked online, do NOT repeatedly query the internet on every app launch / sync!
-      final bool alreadyChecked = (item.isOnlineChecked || existingItem?.isOnlineChecked == true) ||
-          isKnownNoOnlineInfo ||
-          item.isManualEdit ||
-          existingItem?.isManualEdit == true;
+      // Exception: if episode numbers were just corrected by an improved parser, re-fetch episode metadata once.
+      final bool alreadyChecked = !hasReparsedEpisodeNumbers &&
+          ((item.isOnlineChecked || existingItem?.isOnlineChecked == true) ||
+              isKnownNoOnlineInfo ||
+              item.isManualEdit ||
+              existingItem?.isManualEdit == true);
 
-      // Fetch online metadata per Title via TMDB ONLY if never checked before
-      if (fetchOnlineMetadata && !alreadyChecked) {
+      // Fetch online metadata per Title via TMDB ONLY if API key is configured and never checked before
+      if (fetchOnlineMetadata && OnlineMetadataService.hasApiKey && !alreadyChecked) {
         try {
           onProgress?.call('Mencari info online: ${item.title}');
-          final online = await OnlineMetadataService.searchMetadata(item.title, isSeries: item.isSeries);
+          final localSeasons = item.isSeries
+              ? item.episodes.map((e) => e.season).where((s) => s > 0).toSet()
+              : null;
+          final online = await OnlineMetadataService.searchMetadata(
+            item.title,
+            isSeries: item.isSeries,
+            localSeasons: localSeasons,
+          );
           if (online != null) {
             List<Episode> updatedEpisodes = item.episodes;
             if (online.episodes.isNotEmpty) {
@@ -836,9 +975,12 @@ class LocalLibraryService {
                 final match = online.episodes.firstWhere(
                   (oe) => oe.season == localEp.season && oe.episodeNumber == localEp.episodeNumber,
                   orElse: () {
-                    final idx = localEp.episodeNumber - 1;
-                    if (idx >= 0 && idx < online.episodes.length) {
-                      return online.episodes[idx];
+                    // Only fallback by 0-based index for Season 1 so Season 2+ never steals Season 1 titles
+                    if (localEp.season == 1) {
+                      final idx = localEp.episodeNumber - 1;
+                      if (idx >= 0 && idx < online.episodes.length && online.episodes[idx].season == 1) {
+                        return online.episodes[idx];
+                      }
                     }
                     return const EpisodeOnlineMetadata(
                       season: 1,
@@ -858,7 +1000,8 @@ class LocalLibraryService {
                     title: match.title,
                     synopsis: match.synopsis.isNotEmpty ? match.synopsis : localEp.synopsis,
                     thumbnail: stillPath ?? match.thumbnailUrl ?? localEp.thumbnail,
-                    duration: localEp.duration ?? match.duration,
+                    // Never take duration from TMDB; always derive duration from the actual local video file
+                    duration: localEp.duration,
                   ));
                 } else {
                   mapped.add(localEp);
@@ -918,13 +1061,8 @@ class LocalLibraryService {
             customMetadataMap[primaryVideoPath] = item.toJson();
           }
         } catch (e) {
-          debugPrint('Online metadata fetch failed for ${item.title}: $e');
-          item = item.copyWith(isOnlineChecked: true);
-          noOnlineInfoTitles.add(cleanTitleLower);
-          noOnlineInfoTitles.add(effectiveTitleLower);
-          noOnlineInfoTitles.add(groupKeyLower);
-          customMetadataMap[groupKey] = item.toJson();
-          customMetadataMap[item.title] = item.toJson();
+          // Do NOT permanently blacklist titles on transient network/timeout errors
+          debugPrint('Online metadata fetch failed (will retry on future scan) for ${item.title}: $e');
         }
       }
 
@@ -944,7 +1082,8 @@ class LocalLibraryService {
           item = item.copyWith(backdrop2Url: cached2);
           customMetadataMap[groupKey] = item.toJson();
         }
-      } else if ((item.backdropUrl == null || item.backdropUrl!.isEmpty) && canUseFfmpeg) {
+      }
+      if ((item.backdropUrl == null || item.backdropUrl!.isEmpty) && canUseFfmpeg) {
         // Fallback: If backdrop is not found online, extract 16:9 backdrop from local video
         final videoSource = item.videoPath.isNotEmpty
             ? item.videoPath
@@ -993,8 +1132,11 @@ class LocalLibraryService {
           }
         }
         var epDuration = ep.duration;
-        if (canUseFfmpeg && (epDuration == null || epDuration.isEmpty)) {
-          epDuration = await LocalThumbnailService.getVideoDuration(ep.videoPath);
+        if (canUseFfmpeg && (extractThumbnails || epDuration == null || epDuration.isEmpty)) {
+          final probed = await LocalThumbnailService.getVideoDuration(ep.videoPath);
+          if (probed != null && probed.isNotEmpty) {
+            epDuration = probed;
+          }
         }
         withThumbnails.add(ep.copyWith(
           thumbnail: thumbPath,
@@ -1010,40 +1152,39 @@ class LocalLibraryService {
       customMetadataMap[item.title] = item.toJson();
       resultItems.add(item);
 
-      // Persist incrementally to library_config.json so progress is never lost.
-      // Retain items from configured folders that are currently offline so their metadata and thumbnails are never lost!
-      final configuredFolders = await getAllConfiguredFolders();
-      final offlineItems = existingCached.where((it) {
-        final inConfigured = _isItemInFolders(it, configuredFolders);
-        final inConnected = _isItemInFolders(it, folders);
-        return inConfigured && !inConnected;
-      }).toList();
-
-      final allSavedItems = [...resultItems, ...offlineItems];
-      config['noOnlineInfoTitles'] = noOnlineInfoTitles.toList();
-      config['customMetadata'] = customMetadataMap;
-      config['cachedItems'] = allSavedItems.map((e) => e.toJson()).toList();
-      await _writeConfig(config);
+      // Batch incremental writes to library_config.json (every 10 items or 2.5s) instead of O(N^2) rewrite per item
+      itemsSinceLastWrite++;
+      final now = DateTime.now();
+      if (itemsSinceLastWrite >= 10 || now.difference(lastWriteTime).inMilliseconds >= 2500) {
+        itemsSinceLastWrite = 0;
+        lastWriteTime = now;
+        final mergedConnected = isIncrementalFolderScan
+            ? _mergePreservedAndScanned(preservedConnectedItems, resultItems)
+            : resultItems;
+        final allSavedItems = [...mergedConnected, ...offlineItemsSnapshot];
+        config['noOnlineInfoTitles'] = noOnlineInfoTitles.toList();
+        config['customMetadata'] = customMetadataMap;
+        config['cachedItems'] = allSavedItems.map((e) => e.toJson()).toList();
+        await _writeConfig(config);
+      }
 
       // Immediately display the completed title on Home screen
       if (onItemReady != null) {
-        final snapshot = List<MediaItem>.from(resultItems)
-          ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
-        _memoryCachedItems = snapshot;
+        final snapshot = isIncrementalFolderScan
+            ? _mergePreservedAndScanned(preservedConnectedItems, resultItems)
+            : (List<MediaItem>.from(resultItems)
+              ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase())));
+        _memoryCachedItems = [...snapshot, ...offlineItemsSnapshot];
         onItemReady(snapshot, item);
       }
     }
 
-    resultItems.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    final mergedConnected = isIncrementalFolderScan
+        ? _mergePreservedAndScanned(preservedConnectedItems, resultItems)
+        : (List<MediaItem>.from(resultItems)
+          ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase())));
 
-    final configuredFolders = await getAllConfiguredFolders();
-    final offlineItems = existingCached.where((it) {
-      final inConfigured = _isItemInFolders(it, configuredFolders);
-      final inConnected = _isItemInFolders(it, folders);
-      return inConfigured && !inConnected;
-    }).toList();
-
-    final allFinalItems = [...resultItems, ...offlineItems];
+    final allFinalItems = [...mergedConnected, ...offlineItemsSnapshot];
     _memoryCachedItems = allFinalItems;
     config['noOnlineInfoTitles'] = noOnlineInfoTitles.toList();
     config['customMetadata'] = customMetadataMap;
@@ -1053,7 +1194,48 @@ class LocalLibraryService {
     // Note: cleanOrphanedCache() is NEVER run during normal scanning!
     // Assets are only purged when a user explicitly removes a folder in Settings.
 
-    return List<MediaItem>.from(resultItems);
+    return List<MediaItem>.from(mergedConnected);
+  }
+
+  /// Merges untouched items from previously scanned folders with newly scanned items
+  /// from an incremental folder scan. If a series spans multiple folders, merges episodes cleanly.
+  static List<MediaItem> _mergePreservedAndScanned(
+    List<MediaItem> preserved,
+    List<MediaItem> scanned,
+  ) {
+    final Map<String, MediaItem> byId = {};
+    for (final item in preserved) {
+      byId[item.id] = item;
+    }
+    for (final item in scanned) {
+      final existing = byId[item.id];
+      if (existing != null && (existing.isSeries || item.isSeries)) {
+        final Map<String, Episode> epByPath = {};
+        for (final ep in existing.episodes) {
+          epByPath[ep.videoPath.toLowerCase().trim()] = ep;
+        }
+        for (final ep in item.episodes) {
+          epByPath[ep.videoPath.toLowerCase().trim()] = ep;
+        }
+        final mergedEps = epByPath.values.toList()
+          ..sort((a, b) {
+            final aS = a.season == 0 ? 9999 : a.season;
+            final bS = b.season == 0 ? 9999 : b.season;
+            if (aS != bS) return aS.compareTo(bS);
+            return a.episodeNumber.compareTo(b.episodeNumber);
+          });
+        byId[item.id] = existing.copyWith(
+          isSeries: true,
+          category: 'series',
+          episodes: mergedEps,
+        );
+      } else {
+        byId[item.id] = item;
+      }
+    }
+    final list = byId.values.toList()
+      ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    return list;
   }
 
   /// Runs inside a background Isolate to avoid blocking the main UI thread.
@@ -1254,10 +1436,12 @@ class LocalLibraryService {
     final seasonDirMatch = RegExp(r'(?:^|\[|\()\s*(?:Season|S)\s*(\d{1,2})\s*(?:$|\]|\))', caseSensitive: false).firstMatch(parentDirName);
     final arcDirMatch = RegExp(r'\b(?:Arc|Part|Cour)\b', caseSensitive: false).firstMatch(parentDirName);
 
-    // Extract title prefix before " - " if present (e.g., "[smol] Onii-chan wa Oshimai! - NCED...")
-    final titleDashMatch = RegExp(r'^(\[[^\]]+\]\s*)?(.+?)\s+[-–—]\s+(.+)$').firstMatch(cleanName);
+    // Extract title prefix before " - " or "_-_" if present
+    // e.g., "[smol] Onii-chan wa Oshimai! - NCED...", "[DB]Azumanga Daiou_-_01_(Dual Audio...)"
+    final titleDashMatch = RegExp(r'^(\[[^\]]+\][\s_]*)?(.+?)[\s_]+[-–—][\s_]+(.+)$').firstMatch(cleanName);
     String? titleFromDash;
     String remainder = cleanName;
+    bool foundEpisodeNumber = false;
     if (titleDashMatch != null) {
       titleFromDash = _cleanTitleString(titleDashMatch.group(2)!);
       remainder = titleDashMatch.group(3)!;
@@ -1270,16 +1454,22 @@ class LocalLibraryService {
         if (parsedEp != null && baseTitle.length >= 2) {
           titleFromDash = baseTitle;
           episodeNumber = parsedEp;
+          foundEpisodeNumber = true;
           isSeries = true;
         }
       }
 
-      // 2. If titleFromDash starts with an episode marker (e.g., "E1 Confession", "01 Pilot")
-      final leadingEpMatch = RegExp(r'^(?:e|ep|eps|episode)?\s*(\d{1,4})\b', caseSensitive: false).firstMatch(titleFromDash);
+      // 2. If titleFromDash starts with an episode marker (e.g., "E1 Confession", "01")
+      // Avoid misclassifying year-prefixed movies like "2001 - A Space Odyssey" or "1917 - ..."
+      final leadingEpMatch = RegExp(r'^(e|ep|eps|episode)?\s*(\d{1,4})\b', caseSensitive: false).firstMatch(titleFromDash);
       if (leadingEpMatch != null && (parentDirName.length > 2 && !parentDirName.contains(':'))) {
-        final parsedEp = int.tryParse(leadingEpMatch.group(1)!);
-        if (parsedEp != null && parsedEp > 0) {
+        final hasExplicitPrefix = leadingEpMatch.group(1) != null;
+        final parsedEp = int.tryParse(leadingEpMatch.group(2)!);
+        final isLikelyYear = !hasExplicitPrefix && parsedEp != null && parsedEp >= 1900 && parsedEp <= 2099;
+        final isPureNumberOrPrefixed = hasExplicitPrefix || titleFromDash.trim() == leadingEpMatch.group(2);
+        if (parsedEp != null && parsedEp > 0 && !isLikelyYear && isPureNumberOrPrefixed) {
           episodeNumber = parsedEp;
+          foundEpisodeNumber = true;
           isSeries = true;
           // Use parent directory name as show title
           titleFromDash = _cleanTitleString(parentDirName);
@@ -1350,7 +1540,8 @@ class LocalLibraryService {
     }
 
     if (!isMovieTag) {
-      final seMatch = RegExp(r'[sS](\d{1,2})[eE](\d{1,3})').firstMatch(remainder.isNotEmpty ? remainder : cleanName);
+      final seSource = remainder.isNotEmpty ? remainder : cleanName;
+      final seMatch = RegExp(r'[sS](\d{1,2})[eE](\d{1,3})').firstMatch(seSource);
       if (seMatch != null) {
         final parsedSeason = int.tryParse(seMatch.group(1)!);
         if (parsedSeason != null && !isExtrasDir) {
@@ -1360,17 +1551,19 @@ class LocalLibraryService {
           }
         }
         episodeNumber = int.tryParse(seMatch.group(2)!) ?? 1;
+        foundEpisodeNumber = true;
         isSeries = true;
         if (cleanTitle.isEmpty) {
-          cleanTitle = titleFromDash ?? _cleanTitleString(cleanName.substring(0, seMatch.start));
+          cleanTitle = titleFromDash ?? _cleanTitleString(seSource.substring(0, seMatch.start));
         }
       }
 
-      if (!isSeries || (!isExtrasDir && seMatch == null)) {
+      if (!foundEpisodeNumber && (!isSeries || !isExtrasDir)) {
         final nxmMatch = RegExp(r'\b(\d{1,2})x(\d{1,3})\b', caseSensitive: false).firstMatch(cleanName);
         if (nxmMatch != null) {
           season = int.tryParse(nxmMatch.group(1)!) ?? season;
           episodeNumber = int.tryParse(nxmMatch.group(2)!) ?? 1;
+          foundEpisodeNumber = true;
           isSeries = true;
           if (seasonDirMatch == null && arcDirMatch == null && !isExtrasDir) {
             seasonName = 'Season $season';
@@ -1381,10 +1574,11 @@ class LocalLibraryService {
         }
       }
 
-      if (!isSeries || (!isExtrasDir && seMatch == null)) {
-        final epMatch = RegExp(r'\b(?:EP|E|Episode|Eps)\s?(\d{1,3})\b', caseSensitive: false).firstMatch(cleanName);
+      if (!foundEpisodeNumber && (!isSeries || !isExtrasDir)) {
+        final epMatch = RegExp(r'(?:^|[\s_\.\-\(\[])(?:EP|E|Episode|Eps)[\s_]?(\d{1,3})(?=$|[\s_\.\-\)\]])', caseSensitive: false).firstMatch(cleanName);
         if (epMatch != null) {
           episodeNumber = int.tryParse(epMatch.group(1)!) ?? 1;
+          foundEpisodeNumber = true;
           isSeries = true;
           if (cleanTitle.isEmpty) {
             cleanTitle = titleFromDash ?? _cleanTitleString(cleanName.substring(0, epMatch.start));
@@ -1392,23 +1586,32 @@ class LocalLibraryService {
         }
       }
 
-      // Anime naming convention: "Title - 01", "Title - 02v2", etc.
-      if (!isSeries || (!isExtrasDir && seMatch == null)) {
-        final dashNumMatch = RegExp(r'(?:^|[-–—]\s*)(\d{1,4})(?:v\d+)?\b').firstMatch(remainder.isNotEmpty ? remainder : cleanName);
+      // Anime naming convention: "Title - 01", "Title_-_02_(...)", "Title - 02v2", etc.
+      if (!foundEpisodeNumber && (!isSeries || !isExtrasDir)) {
+        final dashNumMatch = RegExp(
+          r'(?:^|[-–—][\s_]*)(\d{1,4})(?:v\d+)?(?=$|[\s_\.\-\(\[\]])',
+        ).firstMatch(remainder.isNotEmpty ? remainder : cleanName);
         if (dashNumMatch != null) {
           final parsedEp = int.tryParse(dashNumMatch.group(1)!);
-          if (parsedEp != null && parsedEp > 0) {
+          final isLikelyYearOrRes = parsedEp != null &&
+              ((parsedEp >= 1900 && parsedEp <= 2099) ||
+                  parsedEp == 480 ||
+                  parsedEp == 720 ||
+                  parsedEp == 1080 ||
+                  parsedEp == 2160);
+          if (parsedEp != null && parsedEp > 0 && !isLikelyYearOrRes) {
             episodeNumber = parsedEp;
+            foundEpisodeNumber = true;
             isSeries = true;
           }
         }
       }
 
-      // Anime naming convention without dash: "[Group] Title 01 [Tags]" or "Title 01 [Tags]"
-      if (!isSeries || (!isExtrasDir && seMatch == null)) {
-        final strippedLeading = cleanName.replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '');
+      // Anime naming convention without dash: "[Group] Title 01 [Tags]", "Title_01_(Tags)", or "Title 01 [Tags]"
+      if (!foundEpisodeNumber && (!isSeries || !isExtrasDir)) {
+        final strippedLeading = cleanName.replaceFirst(RegExp(r'^\[[^\]]+\][\s_]*'), '');
         final spaceNumMatch = RegExp(
-          r'^(.*?)\s+(\d{1,3})(?:v\d+)?(?:\s*\[|\s*\(|\s*_|\s*$)',
+          r'^(.*?)[\s_]+(\d{1,3})(?:v\d+)?(?:\s*\[|\s*\(|\s*_|\s*$)',
           caseSensitive: false,
         ).firstMatch(strippedLeading);
 
@@ -1417,6 +1620,7 @@ class LocalLibraryService {
           final epCandidate = int.tryParse(spaceNumMatch.group(2)!);
           if (candidateTitle.length >= 2 && epCandidate != null && epCandidate > 0) {
             episodeNumber = epCandidate;
+            foundEpisodeNumber = true;
             isSeries = true;
             if (cleanTitle.isEmpty) {
               final cleanParent = _cleanTitleString(parentDirName);
@@ -1432,10 +1636,11 @@ class LocalLibraryService {
         }
       }
 
-      if (!isSeries) {
+      if (!foundEpisodeNumber && !isSeries) {
         final bracketMatch = RegExp(r'\[(\d{1,3})(?:v\d)?\]').firstMatch(cleanName);
         if (bracketMatch != null) {
           episodeNumber = int.tryParse(bracketMatch.group(1)!) ?? 1;
+          foundEpisodeNumber = true;
           isSeries = true;
         }
       }
@@ -1487,10 +1692,11 @@ class LocalLibraryService {
   static String _cleanTitleString(String raw) {
     String text = raw;
 
-    final dot = text.lastIndexOf('.');
-    if (dot != -1 && text.length - dot <= 5) {
-      text = text.substring(0, dot);
-    }
+    // Strip only known video extensions (preserves titles like "Dr. No", "Mr. Robot", "Steins;Gate 0.5")
+    text = text.replaceAll(
+      RegExp(r'\.(mp4|mkv|avi|mov|wmv|flv|webm|ts|m4v|mpg|mpeg|3gp)$', caseSensitive: false),
+      '',
+    );
 
     // Clean common mojibake sequences and noisy symbols
     text = text
@@ -1502,7 +1708,10 @@ class LocalLibraryService {
         .replaceAll('•', ' ')
         .replaceAll('â€™', "'")
         .replaceAll('â€œ', '"')
-        .replaceAll('â€', '"')
+        .replaceAll('â€\u009d', '"')
+        .replaceAll('â€”', ' ')
+        .replaceAll('â€“', ' ')
+        .replaceAll('â€¦', ' ')
         .replaceAll('Ã—', 'x')
         .replaceAll('Â', '');
 
@@ -1545,6 +1754,17 @@ class LocalLibraryService {
   /// Public helper to clean title for single file picker
   static String cleanVideoTitle(String rawFileName) {
     return _cleanTitleString(rawFileName);
+  }
+
+  /// Exposes filename parsing result for unit tests.
+  static ({String cleanTitle, int season, int episodeNumber, bool isSeries}) parseVideoFileMetadata(String filePath) {
+    final info = _parseVideoFile(File(filePath));
+    return (
+      cleanTitle: info.cleanTitle,
+      season: info.season,
+      episodeNumber: info.episodeNumber,
+      isSeries: info.isSeries,
+    );
   }
 }
 

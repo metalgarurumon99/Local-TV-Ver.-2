@@ -9,6 +9,7 @@ import '../services/library_service.dart';
 import '../services/preview_player_service.dart';
 import '../services/thumbnail_service.dart';
 import '../services/watch_history_service.dart';
+import '../utils/media_ui_helpers.dart';
 import 'edit_metadata_dialog.dart';
 import 'hover_animated_widget.dart';
 import 'in_app_player.dart';
@@ -19,7 +20,6 @@ class ItemDetailDialog extends StatefulWidget {
   final MediaItem item;
   final VoidCallback onPlay;
   final VoidCallback? onClose;
-  final VoidCallback? onEdit;
   final ValueChanged<MediaItem>? onItemUpdated;
   final ValueChanged<Episode>? onPlayEpisode;
   final List<MediaItem> similarItems;
@@ -31,7 +31,6 @@ class ItemDetailDialog extends StatefulWidget {
     required this.item,
     required this.onPlay,
     this.onClose,
-    this.onEdit,
     this.onItemUpdated,
     this.onPlayEpisode,
     this.similarItems = const [],
@@ -116,14 +115,27 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
   }
 
   @override
+  void didUpdateWidget(covariant ItemDetailDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.item != oldWidget.item) {
+      _item = widget.item;
+      final seasons = _item.availableSeasonNames;
+      if (!seasons.contains(_selectedSeason)) {
+        _selectedSeason = seasons.isNotEmpty ? seasons.first : 'Season 1';
+      }
+    }
+  }
+
+  @override
   void dispose() {
     DebugLogger.log('ItemDetailDialog dispose: ownerId=$_ownerId');
     _isClosing = true;
     _previewTimer?.cancel();
     _previewTimer = null;
     _dialogFocusNode.dispose();
-    PreviewPlayerService.instance.stopAll();
-    LocalThumbnailService.cancelPendingExtractions();
+    // Release only our own preview so switching directly to another ItemDetailDialog
+    // via "Tontonan Lainnya" doesn't cancel the newly mounted dialog's preview/extractions.
+    PreviewPlayerService.instance.releasePreview(_ownerId);
     super.dispose();
   }
 
@@ -195,18 +207,8 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
       if (p.startsWith('http://') || p.startsWith('https://')) {
         return p;
       }
-      if (LocalThumbnailService.fileExistsCached(p) || File(p).existsSync()) {
+      if (LocalThumbnailService.fileExistsCached(p)) {
         return p;
-      }
-    }
-    final clean = _item.title.toLowerCase();
-    if (clean.contains('onimai') || clean.contains('onii-chan') || clean.contains('oshimai')) {
-      const candidates = [
-        '.cache/logos/logo_onimai_en.png',
-        '.cache/logos\\logo_onimai_en.png',
-      ];
-      for (final p in candidates) {
-        if (File(p).existsSync()) return p;
       }
     }
     return null;
@@ -224,22 +226,23 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
           child: Image.network(
             logoPath,
             fit: BoxFit.contain,
+            cacheWidth: 420,
             alignment: Alignment.bottomLeft,
             filterQuality: FilterQuality.medium,
             errorBuilder: (_, _, _) => _buildBannerTitleFallback(),
           ),
         );
       }
-      final file = File(logoPath);
-      if (file.existsSync()) {
+      if (LocalThumbnailService.fileExistsCached(logoPath)) {
         return ConstrainedBox(
           constraints: const BoxConstraints(
             maxHeight: 95,
             maxWidth: 380,
           ),
           child: Image.file(
-            file,
+            LocalThumbnailService.resolveFile(logoPath),
             fit: BoxFit.contain,
+            cacheWidth: 420,
             alignment: Alignment.bottomLeft,
             filterQuality: FilterQuality.medium,
             errorBuilder: (_, _, _) => _buildBannerTitleFallback(),
@@ -264,22 +267,22 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
     );
   }
 
-  String _getVideoResolution(MediaItem item) {
-    final path = (item.videoPath.isNotEmpty
-            ? item.videoPath
-            : (item.episodes.isNotEmpty ? item.episodes.first.videoPath : ''))
-        .toLowerCase();
-    if (path.contains('2160p') || path.contains('4k')) return '4K';
-    if (path.contains('1080p') || path.contains('1080') || path.contains('fhd')) return '1080p';
-    if (path.contains('720p') || path.contains('720') || path.contains('hd')) return '720p';
-    if (path.contains('480p') || path.contains('480') || path.contains('sd')) return '480p';
-    return '1080p';
-  }
+  String _getVideoResolution(MediaItem item) => MediaUiHelpers.resolveVideoResolutionLabel(item);
 
   @override
   Widget build(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
+    final screenHeight = MediaQuery.sizeOf(context).height;
     final previewService = PreviewPlayerService.instance;
+    final seasonNames = _item.availableSeasonNames;
+    final activeSeason = seasonNames.contains(_selectedSeason)
+        ? _selectedSeason
+        : (seasonNames.isNotEmpty ? seasonNames.first : 'Season 1');
+    final List<Episode> filteredEpisodes = (_item.isSeries && _item.episodes.isNotEmpty)
+        ? _item.episodes.where((ep) {
+            if (seasonNames.length <= 1) return true;
+            return ep.seasonName == activeSeason;
+          }).toList()
+        : const [];
 
     return Focus(
       focusNode: _dialogFocusNode,
@@ -321,11 +324,14 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                       maxWidth: 720,
                       maxHeight: screenHeight * 0.9,
                     ),
-                    child: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                    child: CustomScrollView(
+                      shrinkWrap: true,
+                      slivers: [
+                        SliverToBoxAdapter(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                         // Top Backdrop Image & Shared Hardware Video Preview
               Stack(
                 clipBehavior: Clip.none,
@@ -417,6 +423,9 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                             setState(() {
                               _item = updated;
                             });
+                          }
+                          if (mounted && !_isClosing) {
+                            _dialogFocusNode.requestFocus();
                           }
                         },
                         builder: (context, isHovered) {
@@ -813,28 +822,14 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                       ],
                     ),
 
-                    // Episodes Section for Series with Netflix-Style Season / Arc Selector
+                    // Episodes Section Header for Series with Netflix-Style Season / Arc Selector
                     if (_item.isSeries && _item.episodes.isNotEmpty) ...[
                       const SizedBox(height: 32),
-                      Builder(
-                        builder: (context) {
-                          final seasonNames = _item.availableSeasonNames;
-                          final activeSeason = seasonNames.contains(_selectedSeason)
-                              ? _selectedSeason
-                              : (seasonNames.isNotEmpty ? seasonNames.first : 'Season 1');
-                          final filteredEpisodes = _item.episodes.where((ep) {
-                            if (seasonNames.length <= 1) return true;
-                            return ep.seasonName == activeSeason;
-                          }).toList();
-
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  const Text(
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Text(
                                     'Episodes',
                                     style: TextStyle(
                                       color: Colors.white,
@@ -927,12 +922,22 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                                 ],
                               ),
                               const SizedBox(height: 14),
-                              ListView.separated(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                itemCount: filteredEpisodes.length,
-                                separatorBuilder: (_, _) => const Divider(color: Colors.white12, height: 12),
-                                itemBuilder: (ctx, index) {
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Virtualized Episode SliverList (only builds visible episode rows!)
+        if (_item.isSeries && filteredEpisodes.isNotEmpty)
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            sliver: SliverList.separated(
+              itemCount: filteredEpisodes.length,
+              separatorBuilder: (_, _) => const Divider(color: Colors.white12, height: 12),
+              itemBuilder: (ctx, index) {
                                   final ep = filteredEpisodes[index];
                                   final epIndexDisplay = ep.episodeNumber;
                                   final durationLabel = ep.duration ?? '';
@@ -1072,14 +1077,16 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                                   );
                                 },
                               ),
-                            ],
-                          );
-                        },
-                      ),
-                    ],
+          ),
 
-                    // Section "Tontonan Lainnya" (Max 6 cards, 2 rows x 3 columns grid)
-                    if (widget.similarItems.isNotEmpty) ...[
+        // Section "Tontonan Lainnya" (Max 6 cards, 2 rows x 3 columns grid)
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(32, 0, 32, 24),
+          sliver: SliverToBoxAdapter(
+            child: widget.similarItems.isNotEmpty
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       const SizedBox(height: 36),
                       const Text(
                         'Tontonan Lainnya',
@@ -1093,7 +1100,7 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                       const SizedBox(height: 16),
                       LayoutBuilder(
                         builder: (context, constraints) {
-                          final cardWidth = (constraints.maxWidth - 24) / 3;
+                          final cardWidth = ((constraints.maxWidth - 24) / 3).clamp(0.0, double.infinity);
                           final itemsToShow = widget.similarItems.take(6).toList();
 
                           return Wrap(
@@ -1116,15 +1123,15 @@ class _ItemDetailDialogState extends State<ItemDetailDialog> {
                         },
                       ),
                     ],
-                  ],
-                ),
-              ),
-            ],
+                  )
+                : const SizedBox.shrink(),
           ),
         ),
-      ),
+      ],
     ),
   ),
+),
+),
 ),
 ],
 ),
@@ -1163,38 +1170,49 @@ class _EpisodeThumbnailWidgetState extends State<_EpisodeThumbnailWidget> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.episode.videoPath != widget.episode.videoPath ||
         oldWidget.episode.thumbnail != widget.episode.thumbnail) {
+      _resolvedThumb = null;
+      _isExtracting = false;
       _checkAndExtractThumb();
     }
   }
 
   void _checkAndExtractThumb() {
+    final targetVideoPath = widget.episode.videoPath;
+
     // 1. Check if episode already has an existing thumbnail file
     final epThumb = widget.episode.thumbnail;
-    if (epThumb != null && epThumb.isNotEmpty && LocalThumbnailService.fileExistsCached(epThumb)) {
+    if (epThumb != null &&
+        epThumb.isNotEmpty &&
+        !epThumb.startsWith('http://') &&
+        !epThumb.startsWith('https://') &&
+        LocalThumbnailService.fileExistsCached(epThumb)) {
       _resolvedThumb = epThumb;
       return;
     }
 
     // 2. Check if local thumbnail already exists on disk
-    if (LocalThumbnailService.hasThumbnail(widget.episode.videoPath)) {
-      _resolvedThumb = LocalThumbnailService.getThumbnailPath(widget.episode.videoPath);
+    if (LocalThumbnailService.hasThumbnail(targetVideoPath)) {
+      _resolvedThumb = LocalThumbnailService.getThumbnailPath(targetVideoPath);
       return;
     }
 
     // 3. Trigger fast on-demand background extraction via ffmpeg
-    if (!_isExtracting && widget.episode.videoPath.isNotEmpty) {
+    if (!_isExtracting && targetVideoPath.isNotEmpty) {
       _isExtracting = true;
-      LocalThumbnailService.extractThumbnail(widget.episode.videoPath).then((path) {
-        if (mounted && path != null && path.isNotEmpty) {
+      LocalThumbnailService.extractThumbnail(targetVideoPath).then((path) {
+        if (!mounted || widget.episode.videoPath != targetVideoPath) return;
+        if (path != null && path.isNotEmpty) {
           setState(() {
             _resolvedThumb = path;
             _isExtracting = false;
           });
-        } else if (mounted) {
+        } else {
           setState(() => _isExtracting = false);
         }
       }).catchError((_) {
-        if (mounted) setState(() => _isExtracting = false);
+        if (mounted && widget.episode.videoPath == targetVideoPath) {
+          setState(() => _isExtracting = false);
+        }
       });
     }
   }
@@ -1203,8 +1221,8 @@ class _EpisodeThumbnailWidgetState extends State<_EpisodeThumbnailWidget> {
   Widget build(BuildContext context) {
     final thumb = _resolvedThumb ?? widget.episode.thumbnail;
     final hasThumb = thumb != null && thumb.isNotEmpty;
-    final isLocalFile = hasThumb && LocalThumbnailService.fileExistsCached(thumb);
     final isNetwork = hasThumb && (thumb.startsWith('http://') || thumb.startsWith('https://'));
+    final isLocalFile = hasThumb && !isNetwork && LocalThumbnailService.fileExistsCached(thumb);
 
     Widget content;
     if (isLocalFile) {
@@ -1252,24 +1270,7 @@ class _EpisodeThumbnailWidgetState extends State<_EpisodeThumbnailWidget> {
     );
   }
 
-  Widget _buildFallback() {
-    final fb = widget.fallbackPoster;
-    if (fb != null && fb.isNotEmpty) {
-      final isLocal = LocalThumbnailService.fileExistsCached(fb);
-      final isNet = fb.startsWith('http://') || fb.startsWith('https://');
-      if (isLocal || isNet) {
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            if (isLocal)
-              Image.file(File(fb), fit: BoxFit.cover, cacheWidth: 260)
-            else
-              Image.network(fb, fit: BoxFit.cover, cacheWidth: 260),
-            Container(color: Colors.black54),
-          ],
-        );
-      }
-    }
+  Widget _buildEpisodeNumberTile() {
     return Container(
       color: const Color(0xFF222222),
       child: Center(
@@ -1284,6 +1285,37 @@ class _EpisodeThumbnailWidgetState extends State<_EpisodeThumbnailWidget> {
       ),
     );
   }
+
+  Widget _buildFallback() {
+    final fb = widget.fallbackPoster;
+    if (fb != null && fb.isNotEmpty) {
+      final isNet = fb.startsWith('http://') || fb.startsWith('https://');
+      final isLocal = !isNet && LocalThumbnailService.fileExistsCached(fb);
+      if (isLocal || isNet) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (isLocal)
+              Image.file(
+                LocalThumbnailService.resolveFile(fb),
+                fit: BoxFit.cover,
+                cacheWidth: 260,
+                errorBuilder: (_, _, _) => _buildEpisodeNumberTile(),
+              )
+            else
+              Image.network(
+                fb,
+                fit: BoxFit.cover,
+                cacheWidth: 260,
+                errorBuilder: (_, _, _) => _buildEpisodeNumberTile(),
+              ),
+            Container(color: Colors.black54),
+          ],
+        );
+      }
+    }
+    return _buildEpisodeNumberTile();
+  }
 }
 
 /// Netflix-Style Similar Item Card for "Tontonan Lainnya" (Matches Screenshot 4)
@@ -1296,17 +1328,7 @@ class _SimilarItemCard extends StatelessWidget {
     required this.onTap,
   });
 
-  String _getResolution() {
-    final path = (item.videoPath.isNotEmpty
-            ? item.videoPath
-            : (item.episodes.isNotEmpty ? item.episodes.first.videoPath : ''))
-        .toLowerCase();
-    if (path.contains('2160p') || path.contains('4k')) return '4K';
-    if (path.contains('1080p') || path.contains('1080') || path.contains('fhd')) return '1080p';
-    if (path.contains('720p') || path.contains('720') || path.contains('hd')) return '720p';
-    if (path.contains('480p') || path.contains('480') || path.contains('sd')) return '480p';
-    return '1080p';
-  }
+  String _getResolution() => MediaUiHelpers.resolveVideoResolutionLabel(item);
 
   @override
   Widget build(BuildContext context) {
@@ -1491,11 +1513,15 @@ class _SimilarItemCard extends StatelessWidget {
         : (item.backdropUrl ?? item.customThumbnail);
     if (image != null && image.isNotEmpty) {
       if (image.startsWith('http://') || image.startsWith('https://')) {
-        return Image.network(image, fit: BoxFit.cover, errorBuilder: (_, _, _) => _fallback());
+        return Image.network(image, fit: BoxFit.cover, cacheWidth: 320, errorBuilder: (_, _, _) => _fallback());
       }
-      final file = File(image);
-      if (file.existsSync()) {
-        return Image.file(file, fit: BoxFit.cover, errorBuilder: (_, _, _) => _fallback());
+      if (LocalThumbnailService.fileExistsCached(image)) {
+        return Image.file(
+          LocalThumbnailService.resolveFile(image),
+          fit: BoxFit.cover,
+          cacheWidth: 320,
+          errorBuilder: (_, _, _) => _fallback(),
+        );
       }
     }
     return _fallback();

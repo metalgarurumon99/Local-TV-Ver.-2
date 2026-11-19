@@ -163,7 +163,7 @@ class MediaItem {
 
   bool matchesSearchQuery(String query) {
     if (query.isEmpty) return true;
-    return searchIndex.contains(query);
+    return searchIndex.contains(query.toLowerCase());
   }
 
   /// Returns unique list of season / arc names preserving order
@@ -186,7 +186,7 @@ class MediaItem {
   }
 
   bool get isLocalImage {
-    if (customThumbnail == null) return false;
+    if (customThumbnail == null || customThumbnail!.isEmpty) return false;
     return !isNetworkImage && !customThumbnail!.startsWith('asset://') && !customThumbnail!.startsWith('assets/');
   }
 
@@ -284,6 +284,8 @@ class MediaItem {
     };
   }
 
+  static final RegExp _whitespaceRegex = RegExp(r'\s+');
+
   static String _cleanString(String? text, String fallback) {
     if (text == null || text.isEmpty) return fallback;
     return text
@@ -294,10 +296,13 @@ class MediaItem {
         .replaceAll('â€¢', ' • ')
         .replaceAll('â€™', "'")
         .replaceAll('â€œ', '"')
-        .replaceAll('â€', '"')
+        .replaceAll('â€\u009d', '"')
+        .replaceAll('â€”', '—')
+        .replaceAll('â€“', '–')
+        .replaceAll('â€¦', '...')
         .replaceAll('Ã—', 'x')
         .replaceAll('Â', '')
-        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(_whitespaceRegex, ' ')
         .trim();
   }
 

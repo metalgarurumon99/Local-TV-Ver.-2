@@ -7,6 +7,7 @@ import '../models/media_item.dart';
 import '../services/preview_player_service.dart';
 import '../services/thumbnail_service.dart';
 import '../services/watch_history_service.dart';
+import '../utils/media_ui_helpers.dart';
 import 'hover_animated_widget.dart';
 import 'vertical_preview_volume.dart';
 
@@ -74,13 +75,14 @@ class _HeroBillboardState extends State<HeroBillboard> {
       widget.isVisibleNotifier?.addListener(_handleVisibilityChanged);
     }
     final bool isVisible = widget.isVisibleNotifier?.value ?? true;
-    if (!widget.isActive || !isVisible) {
+    if (!widget.isActive || !isVisible || !widget.isConnected) {
       _stopPreview();
       return;
     }
     if (oldWidget.featuredItem.id != widget.featuredItem.id ||
         oldWidget.featuredItem.videoPath != widget.featuredItem.videoPath ||
-        (!oldWidget.isActive && widget.isActive)) {
+        (!oldWidget.isActive && widget.isActive) ||
+        (!oldWidget.isConnected && widget.isConnected)) {
       _stopPreview();
       _schedulePreview();
     }
@@ -133,16 +135,6 @@ class _HeroBillboardState extends State<HeroBillboard> {
       }
       if (LocalThumbnailService.fileExistsCached(p)) {
         return p;
-      }
-    }
-    final clean = widget.featuredItem.title.toLowerCase();
-    if (clean.contains('onimai') || clean.contains('onii-chan') || clean.contains('oshimai')) {
-      const candidates = [
-        '.cache/logos/logo_onimai_en.png',
-        '.cache/logos\\logo_onimai_en.png',
-      ];
-      for (final p in candidates) {
-        if (LocalThumbnailService.fileExistsCached(p)) return p;
       }
     }
     return null;
@@ -315,6 +307,7 @@ class _HeroBillboardState extends State<HeroBillboard> {
           child: Image.network(
             logoPath,
             fit: BoxFit.contain,
+            cacheWidth: 480,
             alignment: Alignment.centerLeft,
             filterQuality: FilterQuality.medium,
             errorBuilder: (_, _, _) => _buildTextTitle(),
@@ -330,6 +323,7 @@ class _HeroBillboardState extends State<HeroBillboard> {
           child: Image.file(
             File(logoPath),
             fit: BoxFit.contain,
+            cacheWidth: 480,
             alignment: Alignment.centerLeft,
             filterQuality: FilterQuality.low,
             errorBuilder: (_, _, _) => _buildTextTitle(),
@@ -375,7 +369,7 @@ class _HeroBillboardState extends State<HeroBillboard> {
 
     // Rating
     final rating = item.rating;
-    if (rating != null && rating.isNotEmpty) {
+    if (rating != null && rating.isNotEmpty && rating != '0' && rating != '0.0') {
       metaItems.add(
         Row(
           mainAxisSize: MainAxisSize.min,
@@ -497,17 +491,7 @@ class _HeroBillboardState extends State<HeroBillboard> {
     );
   }
 
-  String _getVideoResolution(MediaItem item) {
-    final path = (item.videoPath.isNotEmpty
-            ? item.videoPath
-            : (item.episodes.isNotEmpty ? item.episodes.first.videoPath : ''))
-        .toLowerCase();
-    if (path.contains('2160p') || path.contains('4k')) return '4K';
-    if (path.contains('1080p') || path.contains('1080') || path.contains('fhd')) return '1080p';
-    if (path.contains('720p') || path.contains('720') || path.contains('hd')) return '720p';
-    if (path.contains('480p') || path.contains('480') || path.contains('sd')) return '480p';
-    return '1080p';
-  }
+  String _getVideoResolution(MediaItem item) => MediaUiHelpers.resolveVideoResolutionLabel(item);
 
   @override
   Widget build(BuildContext context) {
@@ -539,12 +523,14 @@ class _HeroBillboardState extends State<HeroBillboard> {
               final bool isReady = previewService.isOwnerReady(_ownerId);
               final controller = previewService.controller;
 
+              // Only mount Video when this HeroBillboard owns the shared VideoController
+              // to prevent flashing another card's video and avoid D3D11 texture contention.
               return Positioned.fill(
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 700),
-                  opacity: (isReady && controller != null) ? 1.0 : 0.0,
-                  child: controller != null
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 500),
+                  child: (isReady && controller != null)
                       ? Video(
+                          key: ValueKey<String>('hero-video-${widget.featuredItem.id}'),
                           controller: controller,
                           fit: BoxFit.cover,
                           controls: NoVideoControls,
@@ -552,7 +538,7 @@ class _HeroBillboardState extends State<HeroBillboard> {
                             visible: false,
                           ),
                         )
-                      : const SizedBox.shrink(),
+                      : const SizedBox.shrink(key: ValueKey<String>('hero-video-idle')),
                 ),
               );
             },

@@ -45,18 +45,21 @@ class _VerticalPreviewVolumeControlState extends State<VerticalPreviewVolumeCont
     previewService.setVolume(pct * 100.0);
   }
 
+  bool _isDragging = false;
+
   @override
   Widget build(BuildContext context) {
     final previewService = PreviewPlayerService.instance;
+    final bool showSlider = _isHovered || _isDragging;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
-      child: ListenableBuilder(
-        listenable: previewService,
-        builder: (context, _) {
-          final isMuted = previewService.isMuted || previewService.volume <= 0.0;
-          final double currentVol = isMuted ? 0.0 : previewService.volume.clamp(0.0, 100.0);
+      child: ValueListenableBuilder<({double volume, bool isMuted})>(
+        valueListenable: previewService.volumeStateNotifier,
+        builder: (context, volState, _) {
+          final isMuted = volState.isMuted || volState.volume <= 0.0;
+          final double currentVol = isMuted ? 0.0 : volState.volume.clamp(0.0, 100.0);
           final double effectivePct = (currentVol / 100.0).clamp(0.0, 1.0);
 
           // Speaker Button (classic circular style)
@@ -85,18 +88,22 @@ class _VerticalPreviewVolumeControlState extends State<VerticalPreviewVolumeCont
           // Pure Vertical Track Bar (no capsule, no borders, transparent background)
           final verticalTrack = AnimatedOpacity(
             duration: const Duration(milliseconds: 180),
-            opacity: _isHovered ? 1.0 : 0.0,
+            opacity: showSlider ? 1.0 : 0.0,
             child: IgnorePointer(
-              ignoring: !_isHovered,
+              ignoring: !showSlider,
               child: SizedBox(
                 width: 28,
                 height: widget.sliderHeight,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onVerticalDragStart: (details) =>
-                      _updateVolumeFromDy(details.localPosition.dy, widget.sliderHeight),
+                  onVerticalDragStart: (details) {
+                    setState(() => _isDragging = true);
+                    _updateVolumeFromDy(details.localPosition.dy, widget.sliderHeight);
+                  },
                   onVerticalDragUpdate: (details) =>
                       _updateVolumeFromDy(details.localPosition.dy, widget.sliderHeight),
+                  onVerticalDragEnd: (_) => setState(() => _isDragging = false),
+                  onVerticalDragCancel: () => setState(() => _isDragging = false),
                   onTapDown: (details) =>
                       _updateVolumeFromDy(details.localPosition.dy, widget.sliderHeight),
                   child: Center(

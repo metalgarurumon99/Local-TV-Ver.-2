@@ -53,7 +53,7 @@ class _VideoCardState extends State<VideoCard> {
   @override
   void dispose() {
     _hoverTimer?.cancel();
-    _removePopover();
+    _removePopover(deferNotifierReset: true);
     super.dispose();
   }
 
@@ -176,17 +176,26 @@ class _VideoCardState extends State<VideoCard> {
     WidgetsBinding.instance.scheduleFrame();
   }
 
-  void _removePopover() {
+  void _removePopover({bool deferNotifierReset = false}) {
     DebugLogger.log('VideoCard _removePopover CALLED: ownerId=$_ownerId, wasOpen=$_isPopoverOpen');
     _hoverTimer?.cancel();
     _hoverTimer = null;
     final bool wasOpen = _isPopoverOpen;
     _isPopoverOpen = false;
+    final bool shouldClear = _closeActivePopover == _removePopover || wasOpen;
     if (_closeActivePopover == _removePopover) {
       _closeActivePopover = null;
-      VideoCard.activePopoverNotifier.value = null;
-    } else if (wasOpen) {
-      VideoCard.activePopoverNotifier.value = null;
+    }
+    if (shouldClear) {
+      if (deferNotifierReset) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_closeActivePopover == null) {
+            VideoCard.activePopoverNotifier.value = null;
+          }
+        });
+      } else {
+        VideoCard.activePopoverNotifier.value = null;
+      }
     }
     PreviewPlayerService.instance.releasePreview(_ownerId);
   }
@@ -230,16 +239,6 @@ class _VideoCardState extends State<VideoCard> {
       }
       if (LocalThumbnailService.fileExistsCached(p)) {
         return p;
-      }
-    }
-    final clean = widget.item.title.toLowerCase();
-    if (clean.contains('onimai') || clean.contains('onii-chan') || clean.contains('oshimai')) {
-      const candidates = [
-        '.cache/logos/logo_onimai_en.png',
-        '.cache/logos\\logo_onimai_en.png',
-      ];
-      for (final p in candidates) {
-        if (LocalThumbnailService.fileExistsCached(p)) return p;
       }
     }
     return null;

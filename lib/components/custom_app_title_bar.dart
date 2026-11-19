@@ -3,7 +3,6 @@ import 'package:window_manager/window_manager.dart';
 import 'hover_animated_widget.dart';
 
 class CustomAppTitleBar extends StatefulWidget {
-  final String title;
   final bool isTransparent;
 
   // Optional unified navbar controls (used on BrowseScreen)
@@ -11,20 +10,15 @@ class CustomAppTitleBar extends StatefulWidget {
   final ValueChanged<String>? onCategoryChanged;
   final VoidCallback? onSyncLibrary;
   final bool isScanning;
-  final VoidCallback? onBack;
-  final String? playingTitle;
   final bool isPlayerMode;
 
   const CustomAppTitleBar({
     super.key,
-    this.title = 'Local TV Ver. 2',
     this.isTransparent = false,
     this.activeCategory,
     this.onCategoryChanged,
     this.onSyncLibrary,
     this.isScanning = false,
-    this.onBack,
-    this.playingTitle,
     this.isPlayerMode = false,
   });
 
@@ -66,19 +60,62 @@ class _CustomAppTitleBarState extends State<CustomAppTitleBar> with WindowListen
   }
 
   Future<void> _toggleMaximize() async {
-    if (_isMaximized) {
-      await windowManager.unmaximize();
-    } else {
-      await windowManager.maximize();
-    }
+    try {
+      final isMax = await windowManager.isMaximized();
+      if (isMax) {
+        await windowManager.unmaximize();
+      } else {
+        await windowManager.maximize();
+      }
+    } catch (_) {}
+  }
+
+  Widget _buildBrandLogo({required double fontSize, required EdgeInsets padding}) {
+    return DragToMoveArea(
+      child: GestureDetector(
+        onDoubleTap: _toggleMaximize,
+        child: Padding(
+          padding: padding,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'LOCAL TV',
+                style: TextStyle(
+                  color: const Color(0xFFE50914),
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.1,
+                ),
+              ),
+              const SizedBox(width: 5),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE50914),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: const Text(
+                  'v2',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool hasBack = widget.onBack != null;
     final bool isPlayerMode = widget.isPlayerMode;
-    final double barHeight = (_hasNavControls || hasBack || isPlayerMode) ? 46.0 : 34.0;
-    final screenWidth = MediaQuery.of(context).size.width;
+    final double barHeight = (_hasNavControls || isPlayerMode) ? 46.0 : 34.0;
+    final screenWidth = MediaQuery.sizeOf(context).width;
     final bool isCompact = screenWidth < 1050;
 
     return Container(
@@ -92,189 +129,20 @@ class _CustomAppTitleBarState extends State<CustomAppTitleBar> with WindowListen
       child: Row(
         children: [
           if (isPlayerMode) ...[
-            // YouTube-style windowed topbar: Brand Logo ONLY (per request #8)
-            DragToMoveArea(
-              child: GestureDetector(
-                onDoubleTap: _toggleMaximize,
-                child: Padding(
-                  padding: EdgeInsets.only(left: isCompact ? 14 : 20, right: isCompact ? 12 : 16),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text(
-                        'LOCAL TV',
-                        style: TextStyle(
-                          color: Color(0xFFE50914),
-                          fontSize: 16,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 1.1,
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE50914),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: const Text(
-                          'v2',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            _buildBrandLogo(
+              fontSize: 16,
+              padding: EdgeInsets.only(left: isCompact ? 14 : 20, right: isCompact ? 12 : 16),
             ),
-            const Expanded(
-              child: DragToMoveArea(
-                child: SizedBox.expand(),
-              ),
-            ),
-          ] else if (hasBack) ...[
-            // Back to Home Button
-            Padding(
-              padding: const EdgeInsets.only(left: 12, right: 6),
-              child: HoverAnimatedWidget(
-                hoverScale: 1.05,
-                onTap: widget.onBack,
-                builder: (context, isHovered) => AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  height: 28,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: isHovered ? Colors.white.withValues(alpha: 0.16) : Colors.white.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: isHovered ? Colors.white38 : Colors.white12, width: 0.8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.arrow_back_rounded, color: isHovered ? Colors.white : Colors.white70, size: 14),
-                      const SizedBox(width: 5),
-                      Text(
-                        'Beranda',
-                        style: TextStyle(
-                          color: isHovered ? Colors.white : Colors.white70,
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-            // Draggable Brand Logo
-            DragToMoveArea(
-              child: GestureDetector(
-                onDoubleTap: _toggleMaximize,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text(
-                        'LOCAL TV',
-                        style: TextStyle(
-                          color: Color(0xFFE50914),
-                          fontSize: 16,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 1.1,
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE50914),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: const Text(
-                          'v2',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-            if (widget.playingTitle != null && widget.playingTitle!.isNotEmpty) ...[
-              Container(
-                width: 1,
-                height: 16,
-                margin: const EdgeInsets.symmetric(horizontal: 10),
-                color: Colors.white12,
-              ),
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: screenWidth * 0.40),
-                child: Text(
-                  widget.playingTitle!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
           ] else if (_hasNavControls) ...[
-            // 1. Draggable Brand Logo
-            DragToMoveArea(
-              child: GestureDetector(
-                onDoubleTap: _toggleMaximize,
-                child: Padding(
-                  padding: EdgeInsets.only(left: isCompact ? 14 : 22, right: isCompact ? 12 : 20),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text(
-                        'LOCAL TV',
-                        style: TextStyle(
-                          color: Color(0xFFE50914),
-                          fontSize: 17,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 1.1,
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE50914),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: const Text(
-                          'v2',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            _buildBrandLogo(
+              fontSize: 17,
+              padding: EdgeInsets.only(left: isCompact ? 14 : 22, right: isCompact ? 12 : 20),
             ),
 
-            // 2. Category Tabs (Home & Settings)
+            // Category Tabs (Home, Browse & Settings)
             _buildNavTab('all', 'Home'),
+            const SizedBox(width: 4),
+            _buildNavTab('browse', 'Browse'),
             const SizedBox(width: 4),
             _buildNavTab('settings', 'Settings'),
             const SizedBox(width: 6),
@@ -293,8 +161,8 @@ class _CustomAppTitleBarState extends State<CustomAppTitleBar> with WindowListen
             ),
           ),
 
-          // Right Side: Avatar (when in unified BrowseScreen mode or Player mode)
-          if (_hasNavControls || hasBack) ...[
+          // Right Side: Avatar (when in unified BrowseScreen mode)
+          if (_hasNavControls) ...[
             ClipRRect(
               borderRadius: BorderRadius.circular(4),
               child: Image.asset(

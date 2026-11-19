@@ -7,6 +7,42 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // Single-instance lock: if Local TV is already running, focus the existing window and exit immediately
+  HANDLE single_instance_mutex = ::CreateMutexW(
+      nullptr, TRUE, L"Local\\LocalTVVer2_SingleInstance_Mutex");
+  if (single_instance_mutex != nullptr &&
+      ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    HWND existing_hwnd =
+        ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"Local TV Ver. 2");
+    if (existing_hwnd == nullptr) {
+      existing_hwnd = ::FindWindowW(nullptr, L"Local TV Ver. 2");
+    }
+    if (existing_hwnd != nullptr) {
+      DWORD target_pid = 0;
+      DWORD target_tid = ::GetWindowThreadProcessId(existing_hwnd, &target_pid);
+      DWORD current_tid = ::GetCurrentThreadId();
+      if (target_pid != 0) {
+        ::AllowSetForegroundWindow(target_pid);
+      }
+      bool attached = false;
+      if (target_tid != 0 && target_tid != current_tid) {
+        attached = ::AttachThreadInput(current_tid, target_tid, TRUE) != 0;
+      }
+      if (::IsIconic(existing_hwnd)) {
+        ::ShowWindow(existing_hwnd, SW_RESTORE);
+      }
+      ::SetWindowPos(existing_hwnd, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+      ::BringWindowToTop(existing_hwnd);
+      ::SetForegroundWindow(existing_hwnd);
+      if (attached) {
+        ::AttachThreadInput(current_tid, target_tid, FALSE);
+      }
+    }
+    ::CloseHandle(single_instance_mutex);
+    return EXIT_SUCCESS;
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
@@ -39,5 +75,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  if (single_instance_mutex != nullptr) {
+    ::ReleaseMutex(single_instance_mutex);
+    ::CloseHandle(single_instance_mutex);
+  }
   return EXIT_SUCCESS;
 }

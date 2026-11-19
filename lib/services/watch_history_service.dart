@@ -1,7 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'thumbnail_service.dart';
 
 class WatchHistoryEntry {
   final String mediaId;
@@ -143,6 +143,22 @@ class WatchHistoryEntry {
 class WatchHistoryService {
   static const String _cacheFileName = 'watch_history.json';
   static List<WatchHistoryEntry>? _memoryEntries;
+  static Future<void> _ioQueue = Future<void>.value();
+
+  static Future<T> _synchronized<T>(Future<T> Function() action) {
+    final prev = _ioQueue;
+    final completer = Completer<void>();
+    _ioQueue = completer.future;
+    return prev.then((_) async {
+      try {
+        return await action();
+      } finally {
+        completer.complete();
+      }
+    });
+  }
+
+  static Directory? _cachedCacheDir;
 
   static Directory _resolveAppDirectory(String relativeName) {
     final direct = Directory(relativeName);
@@ -159,7 +175,7 @@ class WatchHistoryService {
   }
 
   static File _getHistoryFile() {
-    final cacheDir = _resolveAppDirectory('.cache');
+    final cacheDir = _cachedCacheDir ??= _resolveAppDirectory('.cache');
     if (!cacheDir.existsSync()) {
       cacheDir.createSync(recursive: true);
     }
@@ -167,8 +183,11 @@ class WatchHistoryService {
   }
 
   /// Compute a canonical grouping key so 1 Series only ever occupies 1 slot
-  /// in "Lanjutkan Menonton" (even for legacy per-episode entries).
+  /// in "Lanjutkan Menonton" without colliding distinct series stored in the same flat folder.
   static String _seriesSlotKey(WatchHistoryEntry entry) {
+    if (entry.mediaId.isNotEmpty) {
+      return 'id:${entry.mediaId}';
+    }
     if (entry.isSeries && entry.videoPath.isNotEmpty) {
       try {
         final parentPath = File(entry.videoPath).parent.path.toLowerCase();
@@ -177,7 +196,7 @@ class WatchHistoryService {
         }
       } catch (_) {}
     }
-    return 'id:${entry.mediaId}';
+    return 'path:${entry.videoPath.toLowerCase()}';
   }
 
   static List<WatchHistoryEntry> _deduplicateBySeries(List<WatchHistoryEntry> sortedEntries) {
@@ -197,80 +216,102 @@ class WatchHistoryService {
     return deduplicated;
   }
 
-  /// Get all watch history entries ordered by last watched descending (1 slot per series)
+  /// Get all watch history entries ordered by last watched descending (1 slot per series).
+  /// Preserves entries from temporarily offline drives instead of deleting them.
   static Future<List<WatchHistoryEntry>> getRecentHistory({int limit = 30}) async {
-    try {
-      if (_memoryEntries != null) {
-        final valid = _deduplicateBySeries(
-          _memoryEntries!
-              .where((e) => LocalThumbnailService.fileExistsCached(e.videoPath))
-              .toList(),
-        );
-        if (valid.length > limit) {
-          return valid.sublist(0, limit);
-        }
-        return valid;
-      }
-
-      final file = _getHistoryFile();
-      if (!await file.exists()) {
-        _memoryEntries = [];
-        return [];
-      }
-
-      String content = await file.readAsString();
-      content = content.replaceAll('\u0000', '').trim();
-      if (content.isEmpty) {
-        _memoryEntries = [];
-        return [];
-      }
-
-      final List<dynamic> list = jsonDecode(content);
-      final rawEntries = list
-          .map((item) => WatchHistoryEntry.fromJson(item as Map<String, dynamic>))
-          .where((e) => LocalThumbnailService.fileExistsCached(e.videoPath))
-          .toList();
-
-      rawEntries.sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
-      final entries = _deduplicateBySeries(rawEntries);
-      _memoryEntries = entries;
-
-      // If legacy duplicate entries were cleaned up, persist the cleaned list
-      if (entries.length != rawEntries.length) {
-        await _writeHistoryFile(entries);
-      }
-
-      if (entries.length > limit) {
-        return entries.sublist(0, limit);
-      }
-      return List<WatchHistoryEntry>.from(entries);
-    } catch (e) {
-      debugPrint('Error reading watch history: $e');
-      _memoryEntries = [];
+    return _synchronized(() async {
       try {
-        final file = _getHistoryFile();
-        if (await file.exists()) {
-          await _writeHistoryFile([]);
+        if (_memoryEntries != null) {
+          final valid = _deduplicateBySeries(_memoryEntries!);
+          if (valid.length > limit) {
+            return valid.sublist(0, limit);
+          }
+          return valid;
         }
-      } catch (_) {}
-      return [];
-    }
+
+        final file = _getHistoryFile();
+        final tmpFile = File('${file.path}.tmp');
+        String? content;
+        if (await file.exists()) {
+          try {
+            content = await file.readAsString();
+          } catch (_) {}
+        }
+        if ((content == null || content.trim().isEmpty) && await tmpFile.exists()) {
+          try {
+            content = await tmpFile.readAsString();
+          } catch (_) {}
+        }
+        if (content == null) {
+          _memoryEntries = [];
+          return [];
+        }
+
+        content = content.replaceAll('\u0000', '').trim();
+        if (content.isEmpty) {
+          _memoryEntries = [];
+          return [];
+        }
+
+        final List<dynamic> list = jsonDecode(content);
+        final rawEntries = list
+            .whereType<Map<String, dynamic>>()
+            .map(WatchHistoryEntry.fromJson)
+            .toList();
+
+        rawEntries.sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
+        final entries = _deduplicateBySeries(rawEntries);
+        _memoryEntries = entries;
+
+        // If legacy duplicate entries were cleaned up, persist the cleaned list
+        if (entries.length != rawEntries.length) {
+          await _writeHistoryFileUnlocked(entries);
+        }
+
+        if (entries.length > limit) {
+          return entries.sublist(0, limit);
+        }
+        return List<WatchHistoryEntry>.from(entries);
+      } catch (e) {
+        // Never wipe watch_history.json on a transient read/parse error; preserve user data on disk.
+        debugPrint('Error reading watch history (preserving file on disk): $e');
+        return _memoryEntries != null ? List<WatchHistoryEntry>.from(_memoryEntries!) : [];
+      }
+    });
   }
 
-  /// Write entries safely to disk using atomic rename to prevent corruption or null bytes
-  static Future<void> _writeHistoryFile(List<WatchHistoryEntry> entries) async {
+  /// Write entries safely to disk using atomic rename (caller must hold [_synchronized] lock).
+  static Future<void> _writeHistoryFileUnlocked(List<WatchHistoryEntry> entries) async {
     try {
       final file = _getHistoryFile();
       final tempFile = File('${file.path}.tmp');
       final jsonStr = jsonEncode(entries.map((e) => e.toJson()).toList());
       await tempFile.writeAsString(jsonStr, flush: true);
-      if (await tempFile.exists()) {
-        if (await file.exists()) await file.delete();
-        await tempFile.rename(file.path);
+      if (await tempFile.exists() && (await tempFile.length()) > 0) {
+        try {
+          await tempFile.rename(file.path);
+        } catch (_) {
+          // Windows fallback if target exists and cannot be directly overwritten by rename
+          final bakFile = File('${file.path}.bak');
+          if (await file.exists()) {
+            if (await bakFile.exists()) await bakFile.delete();
+            await file.rename(bakFile.path);
+          }
+          await tempFile.rename(file.path);
+          if (await bakFile.exists()) {
+            try {
+              await bakFile.delete();
+            } catch (_) {}
+          }
+        }
       }
     } catch (e) {
       debugPrint('Error writing watch history: $e');
     }
+  }
+
+  static Future<void> _writeHistoryFile(List<WatchHistoryEntry> entries) {
+    return _synchronized(() => _writeHistoryFileUnlocked(entries));
   }
 
   /// Remove history entries for videos whose folders are no longer connected

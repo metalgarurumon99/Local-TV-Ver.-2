@@ -1,12 +1,13 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../models/media_item.dart';
 import '../services/metadata_service.dart';
+import '../services/thumbnail_service.dart';
 
 class EditMetadataDialog extends StatefulWidget {
   final MediaItem item;
-  final ValueChanged<MediaItem> onSave;
+  final FutureOr<void> Function(MediaItem) onSave;
 
   const EditMetadataDialog({
     super.key,
@@ -26,6 +27,7 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
   late final TextEditingController _yearController;
 
   bool _isSearchingOnline = false;
+  bool _isSaving = false;
   String? _onlineSearchStatus;
   List<String>? _fetchedCast;
   String? _fetchedDirector;
@@ -60,6 +62,7 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
         allowedExtensions: ['jpg', 'jpeg', 'png', 'webp'],
       );
 
+      if (!mounted) return;
       if (files.isNotEmpty && files.first.path != null) {
         setState(() {
           _posterUrlController.text = files.first.path!;
@@ -128,25 +131,31 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
       imageWidget = Image.network(
         path,
         fit: BoxFit.cover,
+        cacheWidth: 280,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       );
-    } else if (path.isNotEmpty && File(path).existsSync()) {
+    } else if (path.isNotEmpty && LocalThumbnailService.fileExistsCached(path)) {
       imageWidget = Image.file(
-        File(path),
+        LocalThumbnailService.resolveFile(path),
         fit: BoxFit.cover,
+        cacheWidth: 280,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       );
     } else if (widget.item.customThumbnail != null &&
-        File(widget.item.customThumbnail!).existsSync()) {
+        widget.item.customThumbnail!.isNotEmpty &&
+        !widget.item.isNetworkImage &&
+        LocalThumbnailService.fileExistsCached(widget.item.customThumbnail)) {
       imageWidget = Image.file(
-        File(widget.item.customThumbnail!),
+        LocalThumbnailService.resolveFile(widget.item.customThumbnail!),
         fit: BoxFit.cover,
+        cacheWidth: 280,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       );
     } else {
       imageWidget = Image.asset(
         widget.item.thumbnailPath,
         fit: BoxFit.cover,
+        cacheWidth: 280,
         errorBuilder: (_, _, _) => _buildPlaceholder(),
       );
     }
@@ -180,10 +189,11 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
     return Dialog(
       backgroundColor: const Color(0xFF181818),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Container(
-        width: 650,
-        padding: const EdgeInsets.all(24),
-        child: SingleChildScrollView(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 650),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -334,37 +344,52 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
                     child: const Text('Batal', style: TextStyle(color: Colors.white60)),
                   ),
                   const SizedBox(width: 12),
                   ElevatedButton.icon(
-                    onPressed: () {
-                      final updated = widget.item.copyWith(
-                        title: _titleController.text.trim(),
-                        description: _blurbController.text.trim(),
-                        customThumbnail: _posterUrlController.text.trim().isNotEmpty
-                            ? _posterUrlController.text.trim()
-                            : null,
-                        genre: _genreController.text.trim().isNotEmpty
-                            ? _genreController.text.trim()
-                            : widget.item.genre,
-                        year: _yearController.text.trim().isNotEmpty
-                            ? _yearController.text.trim()
-                            : widget.item.year,
-                        cast: _fetchedCast ?? widget.item.cast,
-                        director: _fetchedDirector ?? widget.item.director,
-                        backdropUrl: _fetchedBackdropUrl ?? widget.item.backdropUrl,
-                        logoUrl: _fetchedLogoUrl ?? widget.item.logoUrl,
-                        isManualEdit: true,
-                      );
-                      widget.onSave(updated);
-                      Navigator.of(context).pop(updated);
-                    },
-                    icon: const Icon(Icons.check, color: Colors.white, size: 18),
-                    label: const Text(
-                      'Simpan Perubahan',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    onPressed: _isSaving
+                        ? null
+                        : () async {
+                            final trimmedTitle = _titleController.text.trim();
+                            final effectiveTitle = trimmedTitle.isNotEmpty ? trimmedTitle : widget.item.title;
+                            final updated = widget.item.copyWith(
+                              title: effectiveTitle,
+                              description: _blurbController.text.trim(),
+                              customThumbnail: _posterUrlController.text.trim().isNotEmpty
+                                  ? _posterUrlController.text.trim()
+                                  : null,
+                              genre: _genreController.text.trim().isNotEmpty
+                                  ? _genreController.text.trim()
+                                  : widget.item.genre,
+                              year: _yearController.text.trim().isNotEmpty
+                                  ? _yearController.text.trim()
+                                  : widget.item.year,
+                              cast: _fetchedCast ?? widget.item.cast,
+                              director: _fetchedDirector ?? widget.item.director,
+                              backdropUrl: _fetchedBackdropUrl ?? widget.item.backdropUrl,
+                              logoUrl: _fetchedLogoUrl ?? widget.item.logoUrl,
+                              isManualEdit: true,
+                            );
+                            setState(() => _isSaving = true);
+                            try {
+                              await widget.onSave(updated);
+                            } finally {
+                              if (mounted) setState(() => _isSaving = false);
+                            }
+                            if (context.mounted) Navigator.of(context).pop(updated);
+                          },
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.check, color: Colors.white, size: 18),
+                    label: Text(
+                      _isSaving ? 'Menyimpan...' : 'Simpan Perubahan',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                     ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFE50914),
@@ -375,6 +400,7 @@ class _EditMetadataDialogState extends State<EditMetadataDialog> {
               ),
             ],
           ),
+        ),
         ),
       ),
     );

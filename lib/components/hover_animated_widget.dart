@@ -26,31 +26,61 @@ class HoverAnimatedWidget extends StatefulWidget {
 
 class _HoverAnimatedWidgetState extends State<HoverAnimatedWidget> {
   bool _isHovered = false;
+  bool _isPressed = false;
+
+  @override
+  void didUpdateWidget(covariant HoverAnimatedWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.onTap == null && (_isHovered || _isPressed)) {
+      _isHovered = false;
+      _isPressed = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final bool isInteractive = widget.onTap != null;
+    final bool effectiveHover = isInteractive && _isHovered;
+    final double targetScale = !isInteractive
+        ? 1.0
+        : (_isPressed ? 0.96 : (effectiveHover ? widget.hoverScale : 1.0));
+
     Widget content = AnimatedScale(
-      scale: _isHovered ? widget.hoverScale : 1.0,
-      duration: widget.duration,
+      scale: targetScale,
+      duration: _isPressed ? const Duration(milliseconds: 80) : widget.duration,
       curve: widget.curve,
-      child: widget.builder(context, _isHovered),
+      child: widget.builder(context, effectiveHover),
     );
 
-    if (widget.onTap != null) {
+    if (isInteractive) {
       content = GestureDetector(
         behavior: HitTestBehavior.opaque,
+        onTapDown: (_) {
+          if (!_isPressed) setState(() => _isPressed = true);
+        },
+        onTapUp: (_) {
+          if (_isPressed) setState(() => _isPressed = false);
+        },
+        onTapCancel: () {
+          if (_isPressed) setState(() => _isPressed = false);
+        },
         onTap: widget.onTap,
         child: content,
       );
     }
 
     return MouseRegion(
-      cursor: widget.cursor,
+      cursor: isInteractive ? widget.cursor : SystemMouseCursors.basic,
       onEnter: (_) {
-        if (!_isHovered) setState(() => _isHovered = true);
+        if (isInteractive && !_isHovered) setState(() => _isHovered = true);
       },
       onExit: (_) {
-        if (_isHovered) setState(() => _isHovered = false);
+        if (_isHovered || _isPressed) {
+          setState(() {
+            _isHovered = false;
+            _isPressed = false;
+          });
+        }
       },
       child: content,
     );
